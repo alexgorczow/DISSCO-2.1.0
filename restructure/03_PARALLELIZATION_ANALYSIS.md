@@ -87,9 +87,14 @@ sounds scale closer to core count. Beyond that, the ranked levers are:
    with anticlip). Kept only as a fast-**preview** knob, not an optimization.
    The real loudness win is bit-exact **SIMD / within-sound parallelism**, not
    subsampling.
-2. **Within-sound parallelism / SIMD** on the loudness, reverb, spatialize
-   per-sample loops — bit-exact, helps few-sound pieces where per-sound
-   threading starves.
+2. **Within-sound parallelism / SIMD** — *investigated and measured to have no
+   bit-exact upside here* (see §7). The per-sample loops are the wrong shape for
+   SIMD: memory-bound copies (spatialize, reverb output) don't speed up under
+   vectorization; the compute-bound loops need *vector transcendentals*
+   (`sin`/`pow`) that change FP results; and the reverb is a sequential IIR
+   recurrence. Compiler auto-vectorization (`-O3 -march=native`) gave ~4% only
+   because of FMA contraction, which breaks parity (−88 dBFS); with
+   `-ffp-contract=off` it is bit-exact but **no faster** than `-O2`.
 3. **Deterministic parallel composite** — removes the last serial section *and*
    makes multi-thread output bit-reproducible (today it drifts ≤3 LSB).
 4. **A *correct* GPU reverb** (matching the CPU algorithm within budget) with
@@ -108,3 +113,34 @@ sounds scale closer to core count. Beyond that, the ranked levers are:
 - Multi-thread / GPU paths are bounded by the original's own run-to-run budget
   (≤ few LSB / < −140 dBFS), which is inaudible and which the original already
   spends via FP summation order.
+
+## 7. Two follow-up investigations (2026-07-07)
+
+### 7a. Within-Sound SIMD — measured dead end for bit-exact speedup
+Compiler auto-vectorization of the whole LASS library (CPU-reverb default,
+30 s tutorial, seed 42):
+
+| flags | 1-thread | parity vs golden (12d2ff21) |
+|---|---|---|
+| `-O2` (default) | 9.90 s | bit-exact |
+| `-O3 -march=native` | 9.77 s (~1%) | **DIFF: −88.6 dBFS RMS** (FMA contraction) |
+| `-O3 -march=native -ffp-contract=off -fno-fast-math` | 10.08 s | **bit-exact but slower** |
+
+Why: the hot per-sample loops are (a) memory-bound copies (spatialize; reverb
+output) that SIMD cannot accelerate, (b) transcendental-bound (`sin` in
+synthesis, `pow` in loudness) which only vectorize via `libmvec`/`-ffast-math`
+that change the FP result, or (c) a sequential IIR recurrence (reverb feedback).
+None yield a bit-exact win. The real remaining levers stay coarse-grained
+(more sounds → more per-Sound threads) plus the already-landed algorithmic fix.
+
+### 7b. `7_final.dissco` segfault — root-caused and fixed
+`7_final.dissco` crashed for every seed. Root cause: the file is **malformed
+XML** (mismatched tag ~line 3164); xerces recovers into a DOM where the Mid
+event "m4" is not a reachable palette sibling, so it is never registered. A
+child then references "m4", and `Utilities::getEventElement` did
+`return it->second` on a `std::map::find()` result that was `end()` —
+**undefined behavior**, segfaulting deep in the `Event` constructor. Fixed
+(`getEventElement` returns NULL on not-found; the caller reports which event
+referenced which missing child and aborts). Now it prints a clear diagnostic
+and exits 1; valid pieces are unaffected (tutorial still bit-exact). Rendering
+7_final itself would require repairing its malformed XML (user data).
