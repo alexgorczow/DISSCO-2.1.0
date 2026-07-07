@@ -18,6 +18,7 @@
 
 #include <vector>
 #include <cstddef>
+#include <cmath>
 
 // Execution-space marker. On CUDA translation units this becomes
 // __host__ __device__ so the SAME worklet body compiles for device.
@@ -63,12 +64,24 @@ private:
  * back to float). Keeping types identical is what makes Serial parity exact.
  */
 struct SampleMapWorklet {
+  // Defined inline (header-only, viskores-style) so the SAME body compiles for
+  // host (g++) and device (nvcc marks it __host__ __device__ via LASS_EXEC).
+  // Verbatim from Partial.cpp:350  sample = amplitude * ( sin(2.0*M_PI*phase) );
+  // amplitude is float, the sine is double, the product rounds back to float.
   LASS_EXEC void operator()(std::size_t s,
                             const float* amplitude,
                             const float* phase,
                             float* wave,
-                            float* ampOut) const;
+                            float* ampOut) const {
+    wave[s]   = amplitude[s] * (sin(2.0 * M_PI * phase[s]));
+    ampOut[s] = amplitude[s];
+  }
 };
+
+// CUDA map dispatch (defined in PartialRendererCuda.cu, compiled by nvcc).
+// Declared unconditionally; the Serial build never references it.
+void renderMapCuda(const float* amplitude, const float* phase,
+                   float* wave, float* ampOut, long n);
 
 /**
  * Returns true if the partial can be rendered by the portable no-transient

@@ -214,4 +214,4 @@ identically). These are checkpoints, not blockers.
 | C1 | Portable-serial single-partial bit-exact vs original | ✅ done | 4/4 cases (const + linear-scan) bit-exact, 0 diffs (`LASS/portable/test_partial_parity`) |
 | C2 | Whole-song serial byte-identical to golden | ✅ done | 30s tutorial via `LASS_PORTABLE_BACKEND=serial` md5-identical to golden; original diff = 3 lines in Sound.cpp; default path unchanged |
 | C3 | Parallel-CPU within S2 budget | ⬜ pending | |
-| C4 | CUDA within S2 budget + speedup on 7_final | ⬜ pending | |
+| C4 | CUDA within S2 budget (parity) | ✅ done | GPU map (same worklet, nvcc) whole-song **byte-identical** to golden (0 LSB, better than the ≤4 LSB budget); deterministic run-to-run. Speedup: none on tutorial (transfer-bound per-partial map — see F6 / Tier 5 perf notes) |

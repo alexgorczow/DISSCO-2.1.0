@@ -47,17 +47,8 @@ static inline m_value_type pmod_(m_value_type num) {
   return num;
 }
 
-// -------------------------------------------------------------------------//
-void SampleMapWorklet::operator()(std::size_t s,
-                                  const float* amplitude,
-                                  const float* phase,
-                                  float* wave,
-                                  float* ampOut) const {
-  // Verbatim from Partial.cpp:350  sample = amplitude * ( sin(2.0*M_PI*phase) );
-  // amplitude is float, the sine is double, the product rounds back to float.
-  wave[s]   = amplitude[s] * (sin(2.0 * M_PI * phase[s]));
-  ampOut[s] = amplitude[s];
-}
+// SampleMapWorklet::operator() is now defined inline in the header so the same
+// body compiles for both host (Serial) and device (CUDA).
 
 // -------------------------------------------------------------------------//
 bool canRenderPortably(Partial& p) {
@@ -77,10 +68,15 @@ MultiTrack* renderPartial(Partial& p,
                           float duration,
                           unsigned int samplingRate,
                           Backend backend) {
-  // Correctness-preserving fallback (Tier 1 supports Serial no-transient path).
-  if (backend != Backend::Serial || !canRenderPortably(p)) {
+  // Correctness-preserving fallback: any partial the portable kernel does not
+  // support (transients / random wave / per-partial reverb) uses the original.
+  if (!canRenderPortably(p)) {
     return p.render(numChannels, sampleCount, duration, samplingRate);
   }
+#if !defined(HAVE_CUDA)
+  // No CUDA in this build: the Cuda backend degrades to Serial (same result).
+  if (backend == Backend::Cuda) backend = Backend::Serial;
+#endif
 
   const long N = (long)(duration * (m_time_type)samplingRate);   // Partial.cpp:68
 
@@ -157,15 +153,21 @@ MultiTrack* renderPartial(Partial& p,
     ph[(std::size_t)s]  = phase;
   }
 
-  // ---- pure map worklet, dispatched by the device adapter ----
-  SampleMapWorklet worklet;
+  // ---- pure map worklet, dispatched by the selected device adapter ----
+  // The SAME SampleMapWorklet body runs on either backend; only the dispatch
+  // (host loop vs. CUDA grid) differs. This is the viskores portability claim.
   float* waveData = waveSample->getData();
   float* ampData  = ampSample->getData();
   const float* ampSrc = amp.data();
   const float* phSrc  = ph.data();
-  DeviceAdapterSerial::Schedule((std::size_t)N, [&](std::size_t s) {
-    worklet(s, ampSrc, phSrc, waveData, ampData);
-  });
+  if (backend == Backend::Cuda) {
+    renderMapCuda(ampSrc, phSrc, waveData, ampData, N);
+  } else {
+    SampleMapWorklet worklet;
+    DeviceAdapterSerial::Schedule((std::size_t)N, [&](std::size_t s) {
+      worklet(s, ampSrc, phSrc, waveData, ampData);
+    });
+  }
 
   // ---- original Track + Spatializer tail (Partial.cpp:360-397) ----
   // No per-partial reverb here (canRenderPortably rejected it). In the CMOD
