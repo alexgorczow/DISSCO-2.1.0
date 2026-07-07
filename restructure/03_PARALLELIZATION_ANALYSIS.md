@@ -144,3 +144,17 @@ child then references "m4", and `Utilities::getEventElement` did
 referenced which missing child and aborts). Now it prints a clear diagnostic
 and exits 1; valid pieces are unaffected (tutorial still bit-exact). Rendering
 7_final itself would require repairing its malformed XML (user data).
+
+### 7c. Multi-threaded valgrind (memcheck + helgrind)
+- **memcheck, 4 threads:** 0 bytes lost, 464,251 allocs = frees, **0 errors** (after
+  the Partial rule-of-three leak fix, which also holds single-threaded).
+- **helgrind, 4 threads:** found real data races on `Score` scalars shared across
+  the add/worker/composite threads without consistent locking — `scoreEndTime`
+  (written under `mutexSoundVector`, read lock-free by the composite thread) and
+  the `doneGettingSoundObjects` / `workerThreadsAllJoined` coordination flags.
+  Made them `std::atomic` (bit-exact; benign on x86 but UB, and a portability/
+  optimization hazard). Score-member race contexts 6 → 2 (the residual 2 are
+  helgrind approximate-stack artifacts around `pthread_create` happens-before in
+  the Score constructor). The rest are benign `std::cout` interleaving from
+  worker-thread logging. No races in the render path, the `Envelope::getValue`
+  cache, or the RNG.
