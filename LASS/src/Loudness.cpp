@@ -33,6 +33,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "Loudness.h"
 #include "InterpolatorTypes.h"
 #include "Partial.h"
+#include "SampledVariable.h"
 #include <cstdlib>
 
 //----------------------------------------------------------------------------//
@@ -61,7 +62,15 @@ void Loudness::calculate(Sound& snd, m_rate_type rate)
 
     // Create a linear interpolator for each partial.
     // this will become that partial's loudness scaling factor
-    vector<LinearInterpolator> scalingFactors(numPartials);
+    // Per-partial per-sample loudness scale factors. Previously each of these
+    // was a LinearInterpolator with one entry PER SAMPLE, whose iterator then
+    // rebuilt a list<Entry> of equal length at synthesis time -- hundreds of MB
+    // per concurrent sound. We accumulate the raw per-sample values in a flat
+    // array here, then store them as a run-length-compressed SampledVariable.
+    vector< vector<m_value_type> > scalingFactors(numPartials);
+    for (int i = 0; i < numPartials; i++)
+        scalingFactors[i].reserve(
+            (m_sample_count_type)((m_time_type)rate * snd.getParam(DURATION)));
     
     // Set each partial's Frequency
     // Dynamic Variable to the proper duration and sampling rate:
@@ -91,9 +100,6 @@ void Loudness::calculate(Sound& snd, m_rate_type rate)
     // iterate over time:
     for (int s=0; s<numSamples; s++)
     {
-        // calculate a relative time [0,1]
-        m_time_type relativeTime = float(s) / float(numSamples);
-        
         // the loudestPartial:
         m_value_type maxAmp = 0.0;
         
@@ -150,7 +156,9 @@ void Loudness::calculate(Sound& snd, m_rate_type rate)
                 scaleFactor *= snd.get(partial_id).getParam(RELATIVE_AMPLITUDE);
 
                 //add the scaling factor for this moment in time.
-                scalingFactors[partial_id].addEntry(relativeTime, scaleFactor);
+                // One value per sample, in order (each partial is placed in
+                // exactly one critical band each sample, so gets one push).
+                scalingFactors[partial_id].push_back(scaleFactor);
             }
         }
         
@@ -164,7 +172,26 @@ void Loudness::calculate(Sound& snd, m_rate_type rate)
 
     // set every partial's scaling factors:
     for (int p=0; p<numPartials; p++)
-        snd.get(p).setParam(LOUDNESS_SCALAR, scalingFactors[p]);
+    {
+        std::vector<m_value_type>& arr = scalingFactors[p];
+
+        // Bit-exact reproduction of the old path: the LinearInterpolator built
+        // with one entry per sample yields, when iterated at the synthesis rate,
+        // arr[s] for s in [0, N-2] and arr[N-2] for the last sample (its last
+        // entry's value is never emitted; the previous one is held). Reproduce
+        // that here so the SampledVariable matches the old output sample-for-
+        // sample. (Derived from LinearInterpolator::valueIterator +
+        // LinearInterpolatorIterator::next; empirically confirmed.)
+        if (arr.size() >= 2)
+            arr[arr.size() - 1] = arr[arr.size() - 2];
+
+        SampledVariable sv;
+        sv.setFromArray(arr);
+        snd.get(p).setParam(LOUDNESS_SCALAR, sv);
+
+        // free this partial's flat array now (keep peak memory low)
+        std::vector<m_value_type>().swap(arr);
+    }
 }
 
 
