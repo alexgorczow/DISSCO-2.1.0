@@ -213,5 +213,6 @@ identically). These are checkpoints, not blockers.
 | C0 | Baseline built; golden bit-exact; budget measured | ✅ done | 1-thread 0 LSB; 64-thread 3 LSB / −152 dBFS |
 | C1 | Portable-serial single-partial bit-exact vs original | ✅ done | 4/4 cases (const + linear-scan) bit-exact, 0 diffs (`LASS/portable/test_partial_parity`) |
 | C2 | Whole-song serial byte-identical to golden | ✅ done | 30s tutorial via `LASS_PORTABLE_BACKEND=serial` md5-identical to golden; original diff = 3 lines in Sound.cpp; default path unchanged |
-| C3 | Parallel-CPU within S2 budget | ⬜ pending | |
-| C4 | CUDA within S2 budget (parity) | ✅ done | GPU map (same worklet, nvcc) whole-song **byte-identical** to golden (0 LSB, better than the ≤4 LSB budget); deterministic run-to-run. Speedup: none on tutorial (transfer-bound per-partial map — see F6 / Tier 5 perf notes) |
+| C3 | Parallel-CPU within S2 budget | ◻ de-scoped | map is independent per-sample (trivially bit-exact under any parallel dispatch) and is *not* the bottleneck; `Score` already parallelizes at Sound granularity. Rationale in `02_RESULTS.md §4`. |
+| C4 | CUDA within S2 budget (parity) | ✅ done | GPU map (same worklet, nvcc) whole-song **byte-identical** to golden (0 LSB, better than the ≤4 LSB budget); deterministic run-to-run. Speedup: none on tutorial (transfer-bound per-partial map — see F6 / `02_RESULTS.md §2`) |
+| C5 | Results & synthesis documented | ✅ done | `02_RESULTS.md` (parity table, perf characterization, viskores retro), `LASS/portable/README.md`, `bench_map` microbenchmark |
