@@ -72,14 +72,21 @@ Per-sound aggregate CPU share after the getValue fix (20 threads):
 
 ## 5. The remaining path to 10× over the *multi-threaded* default
 
-At 20 threads the 50-sound tutorial is **load-imbalance bound** (50 sounds / 20
-cores ≈ 3 on the critical thread) — bigger pieces scale further on the same
-per-sound thread pool. Beyond that, the ranked levers are:
+At 20 threads the 50-sound tutorial is **load-imbalance bound**. Measured
+scaling of the correct default (CPU reverb): 1→4→8→20 threads = 1.0×→3.0×→4.0×→
+**~5.2×**, then flat — because 50 variable-length sounds over 20 cores leaves the
+critical thread with the few longest sounds. This is *coarse-grained* (per-Sound)
+parallelism hitting Amdahl on sound-count, not a compute wall; pieces with more
+sounds scale closer to core count. Beyond that, the ranked levers are:
 
-1. **Loudness rate reduction** (opt-in): loudness is 32% and ~4400× oversampled.
-   Dropping to a few hundred Hz + interpolation is a large win; quantify the
-   (small, slowly-varying) error and gate behind `LASS_LOUDNESS_RATE`. *Quality
-   knob, not bit-exact.*
+1. **Loudness rate reduction** (opt-in `LASS_LOUDNESS_RATE`, default off): loudness
+   is 32% and evaluated at 44.1 kHz. **MEASURED and refuted as a free lunch** —
+   dropping to 4410 Hz gave only **1.46×** while introducing **−19.7 dBFS RMS**
+   error (audible); 100 Hz → 1.6×, −18 dBFS. The per-sample `LOUDNESS_SCALAR` is
+   *not* slowly varying (it couples `maxAmp`/gamma across partials and interacts
+   with anticlip). Kept only as a fast-**preview** knob, not an optimization.
+   The real loudness win is bit-exact **SIMD / within-sound parallelism**, not
+   subsampling.
 2. **Within-sound parallelism / SIMD** on the loudness, reverb, spatialize
    per-sample loops — bit-exact, helps few-sound pieces where per-sound
    threading starves.

@@ -33,6 +33,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "Loudness.h"
 #include "InterpolatorTypes.h"
 #include "Partial.h"
+#include <cstdlib>
 
 //----------------------------------------------------------------------------//
 
@@ -42,6 +43,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //----------------------------------------------------------------------------//
 void Loudness::calculate(Sound& snd, m_rate_type rate)
 {
+    // OPT-IN preview knob (default unset => full 44.1 kHz => BIT-EXACT).
+    // Loudness is evaluated at the full audio rate by default (historically it
+    // ran at 10 Hz). Lowering LASS_LOUDNESS_RATE speeds this stage up, but the
+    // MEASURED error is large (~-18 dBFS RMS even at 4410 Hz on the tutorial for
+    // only ~1.6x): the per-sample LOUDNESS_SCALAR is NOT slowly varying here
+    // (it couples maxAmp/gamma across partials and interacts with anticlip), so
+    // this is a fast-PREVIEW knob, not a transparent optimization. Leave unset
+    // for correct output.
+    if (const char* lr = getenv("LASS_LOUDNESS_RATE")) {
+        int v = atoi(lr);
+        if (v > 0) rate = (m_rate_type) v;
+    }
+
     // count the number of Partials:
     int numPartials = snd.size();
 
