@@ -30,6 +30,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "Sound.h"
 #include "Score.h"
 #include "Loudness.h"
+#include "../portable/PortableSynth.h"  // opt-in device-agnostic partial renderer
 
 //----------------------------------------------------------------------------//
 Sound::Sound()
@@ -266,12 +267,12 @@ MultiTrack* Sound::render(
     else
     {
         Iterator<Partial> iter = iterator();
-        composite = iter.next().render(numChannels, sampleCount, duration, samplingRate);
+        composite = portable::renderPartialDispatch(iter.next(), numChannels, sampleCount, duration, samplingRate);
 
         MultiTrack* tempTrack;
         while(iter.hasNext())
         {
-            tempTrack = iter.next().render(numChannels, sampleCount, duration, samplingRate);
+            tempTrack = portable::renderPartialDispatch(iter.next(), numChannels, sampleCount, duration, samplingRate);
             composite->composite(*tempTrack);
             delete tempTrack;
         }

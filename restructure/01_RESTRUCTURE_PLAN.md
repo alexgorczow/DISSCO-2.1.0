@@ -212,6 +212,6 @@ identically). These are checkpoints, not blockers.
 |---|---|---|---|
 | C0 | Baseline built; golden bit-exact; budget measured | ✅ done | 1-thread 0 LSB; 64-thread 3 LSB / −152 dBFS |
 | C1 | Portable-serial single-partial bit-exact vs original | ✅ done | 4/4 cases (const + linear-scan) bit-exact, 0 diffs (`LASS/portable/test_partial_parity`) |
-| C2 | Whole-song serial byte-identical to golden | ⬜ pending | |
+| C2 | Whole-song serial byte-identical to golden | ✅ done | 30s tutorial via `LASS_PORTABLE_BACKEND=serial` md5-identical to golden; original diff = 3 lines in Sound.cpp; default path unchanged |
 | C3 | Parallel-CPU within S2 budget | ⬜ pending | |
 | C4 | CUDA within S2 budget + speedup on 7_final | ⬜ pending | |

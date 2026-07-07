@@ -27,6 +27,8 @@
 
 #include <cmath>
 #include <functional>
+#include <cstdlib>
+#include <cstring>
 
 namespace portable {
 
@@ -179,6 +181,25 @@ MultiTrack* renderPartial(Partial& p,
   delete detuning_env;
 
   return returnTrack;
+}
+
+// -------------------------------------------------------------------------//
+MultiTrack* renderPartialDispatch(Partial& p,
+                                  int numChannels,
+                                  long sampleCount,
+                                  float duration,
+                                  unsigned int samplingRate) {
+  const char* b = std::getenv("LASS_PORTABLE_BACKEND");
+  if (b != nullptr) {
+    if (std::strcmp(b, "serial") == 0)
+      return renderPartial(p, numChannels, sampleCount, duration, samplingRate,
+                           Backend::Serial);
+    if (std::strcmp(b, "cuda") == 0)
+      return renderPartial(p, numChannels, sampleCount, duration, samplingRate,
+                           Backend::Cuda);
+  }
+  // Default / unknown: original behavior, unchanged.
+  return p.render(numChannels, sampleCount, duration, samplingRate);
 }
 
 } // namespace portable

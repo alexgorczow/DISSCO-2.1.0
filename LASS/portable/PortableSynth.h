@@ -92,6 +92,20 @@ MultiTrack* renderPartial(Partial& p,
                           unsigned int samplingRate,
                           Backend backend = Backend::Serial);
 
+/**
+ * The opt-in seam used by Sound::render(). Chooses the backend from the
+ * LASS_PORTABLE_BACKEND environment variable:
+ *   unset / "off" / unknown -> original Partial::render() (default, unchanged)
+ *   "serial"                -> portable Serial kernel
+ *   "cuda"                  -> portable CUDA kernel (falls back if unavailable)
+ * Keeping this logic in one place makes the Sound.cpp change a single call swap.
+ */
+MultiTrack* renderPartialDispatch(Partial& p,
+                                  int numChannels,
+                                  long sampleCount,
+                                  float duration,
+                                  unsigned int samplingRate);
+
 } // namespace portable
 
 #endif // LASS_PORTABLE_SYNTH_H

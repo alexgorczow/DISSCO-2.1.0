@@ -65,7 +65,8 @@ project "lass"
   location "make" 
   language "C++"
   flags {"StaticRuntime"}
-  files {"LASS/src/*.cpp", "LASS/src/*.h"}
+  files {"LASS/src/*.cpp", "LASS/src/*.h",
+         "LASS/portable/PortableSynth.cpp", "LASS/portable/PortableSynth.h"}
   excludes {"LASS/src/test/**"}
     includedirs {"/usr/local/include"}
   if(HAVE_CUDA) then 
