@@ -175,7 +175,17 @@ public:
 	 * - Both TRANS_WIDTH = 1103
 	 **/
 	Partial();
-    
+
+	/**
+	 * Rule of three: Partial owns spatializer_ (allocated in the constructor,
+	 * cloned in setSpatializer). Without these, the default shallow copy leaked
+	 * the Spatializer on every Partial copy. reverbObj is NOT owned (it is shared
+	 * and set via use_reverb), so it is copied as a plain pointer, not cloned.
+	 **/
+	Partial(const Partial& other);
+	Partial& operator=(const Partial& other);
+	~Partial();
+
 	/** ZIYUAN CHEN, July 2023
 	 * This returns a MultiTrack object of the rendered partial.
 	 * (In the former version, it returned a Track object, which is

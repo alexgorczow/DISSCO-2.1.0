@@ -57,6 +57,33 @@ Partial::Partial()
     spatializer_ = new Spatializer();
 }
 
+//----------------------------------------------------------------------------//
+// Rule of three (fixes a Spatializer leak on every Partial copy). The base
+// ParameterLib copy handles the dynamic-variable parameters; here we deep-copy
+// the owned spatializer_ and share reverbObj (not owned by Partial).
+Partial::Partial(const Partial& other)
+    : ParameterLib<PartialStaticParam, PartialDynamicParam>(other),
+      reverbObj(other.reverbObj),
+      spatializer_(other.spatializer_ ? other.spatializer_->clone() : NULL)
+{
+}
+
+Partial& Partial::operator=(const Partial& other)
+{
+    if (this != &other) {
+        ParameterLib<PartialStaticParam, PartialDynamicParam>::operator=(other);
+        reverbObj = other.reverbObj;
+        delete spatializer_;
+        spatializer_ = other.spatializer_ ? other.spatializer_->clone() : NULL;
+    }
+    return *this;
+}
+
+Partial::~Partial()
+{
+    delete spatializer_;
+}
+
 
 //----------------------------------------------------------------------------//
 MultiTrack* Partial::render(int numChannels,
@@ -385,9 +412,14 @@ MultiTrack* Partial::render(int numChannels,
 //cout << "Partial::render - frequency after detune:" << getParam(FREQ_ENV).getMaxValue() << endl;
 //  cout<< "--------------------------------------------"<< endl;
 
+    // returnTrack holds independent copies of the samples, so the working track
+    // (and the wave/amp SoundSamples it owns) is no longer needed
+    delete _track;
+
     // this section is added by Ming-ching on Dec.10 2012 to prevent memory leak
     delete frequency_env;
     delete freq_env;
+    delete detuning_env;
     delete amptrans_amp_env;
     delete amptrans_rate_env;
     delete freqtrans_amp_env;
