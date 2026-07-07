@@ -30,6 +30,32 @@ Default (CPU reverb) golden md5s — the correct references:
 `portable-serial` synthesis (`LASS_PORTABLE_BACKEND=serial`) is bit-exact with
 the default at every seed (verified by `../parity_regression.sh`).
 
+## Deterministic-composite goldens (`LASS_COMPOSITE=det` / `det-gpu`)
+
+Unlike the legacy entries above (reproducible only at **1 thread**), these
+goldens are **thread-count-, run-, and device-independent**: det@1t == det@Nt
+== det-gpu, md5-equal (see `../../06_DETERMINISTIC_COMPOSITE.md`). They can
+therefore be verified with a fast multi-threaded render — the cheap path IS
+the reference path. det output differs from legacy by design (canonical
+insertion order vs. timing-dependent arrival order): measured max 4 LSB,
+RMS −151.7 dBFS on the tutorial — the composite-order budget, nothing else.
+
+| project | seed | threads | md5 (`LASS_COMPOSITE=det` or `det-gpu`) |
+|---|---|---|---|
+| Tutorial.dissco | 42 | **any** | `27a6672c9e5d0594ce6f39bea358edf5` |
+| ../../profiling/pieces/bench_1min.dissco | 8675309 (in file) | **any** | `c236f2b1ba7cc540c3c7eae5f5a07554` |
+| ../../profiling/pieces/bench_10min.dissco | 8675309 (in file) | **any** | `51fa8676d8a174c03b1a4e73a0b7bb95` |
+
+Verified matrices (2026-07-07): tutorial det@{1,8,20}t + det@20t-run2 +
+det-gpu@{1,20}t all equal; bench_1min det@{1,20}t + run2 + det-gpu@20t all
+equal; bench_10min det@20t == det-gpu@20t.
+
+**Caution for legacy-mode goldens on large pieces:** pieces with more than
+MAX_SOUND_OBJECTS=200 sounds are NOT reproducible in legacy mode at any thread
+count (worker `srand(time(0))`/`rand()` trampled the producer's RNG stream —
+bench_1min legacy@20t gave a different md5 per run). Only det modes yield
+stable goldens for such pieces; do not record legacy md5s for them.
+
 ## Measured determinism budget (machine: RTX 4050, g++ 12.2, 2026-07-06)
 
 Original DISSCO, same seed, run-to-run:
