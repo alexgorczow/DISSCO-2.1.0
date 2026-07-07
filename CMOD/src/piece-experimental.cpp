@@ -33,6 +33,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "Output.h"
 #include "Random.h"
 #include "Utilities.h"
+#include "../../restructure/profiling/StageProfiler.h"
 #include <fstream>
 
 //----------------------------------------------------------------------------//
@@ -228,7 +229,9 @@ Piece::Piece(string _workingPath, string _projectTitle){
   XMLPlatformUtils::Initialize();
   XercesDOMParser* parser = new XercesDOMParser();
   string disscoFile = _projectTitle+ ".dissco";
-  parser->parse(disscoFile.c_str());
+  { PROFILE_SCOPE(prof::PARSE);
+    parser->parse(disscoFile.c_str());
+  }
 
   //get the parsed DOM Document and read the configuration
   DOMDocument* xmlDocument = parser->getDocument();
@@ -354,16 +357,23 @@ Piece::Piece(string _workingPath, string _projectTitle){
       utilities->currChild = 0;
       Event* topEvent = new Event(topElement,
             pieceSpan,0, mainTempo, utilities, NULL,NULL,NULL,NULL);
-      topEvent->buildChildren();
+      { PROFILE_SCOPE(prof::EVENT_BUILD);
+        topEvent->buildChildren();
+      }
 
       //get the final MultiTrack object and write it to disk
       if (soundSynthesis){
         cout << "Piece::Piece: " << "soundSynthesis " << endl;
-        MultiTrack* renderedScore = utilities->doneCMOD();
+        MultiTrack* renderedScore;
+        { PROFILE_SCOPE(prof::RENDER_JOIN);
+          renderedScore = utilities->doneCMOD();
+        }
         string soundFilename = getNextSoundFile();
 
         //Write to file.
-        AuWriter::write(*renderedScore, soundFilename);
+        { PROFILE_SCOPE(prof::WRITE);
+          AuWriter::write(*renderedScore, soundFilename);
+        }
 
         delete renderedScore;
       }

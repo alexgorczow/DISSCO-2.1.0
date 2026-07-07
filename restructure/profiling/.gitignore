@@ -1,0 +1,4 @@
+# Regenerable benchmark run outputs (renders, logs, per-run scratch).
+bench_runs/
+# Compiled micro-profiler binary.
+profile_stages

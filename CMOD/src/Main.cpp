@@ -37,6 +37,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <time.h>
 #include "Note.h"
 #include "SignalHandlers.h"
+#include "../../restructure/profiling/StageProfiler.h"
 
 			//added by Sever must be a more elegant way
 #include <iostream>
@@ -88,8 +89,12 @@ int main(int parameterCount, char **parameterList) {
   PieceHelper::createScoreFilesDirectory(workingPath);
 
   //Create the piece!
-  Piece* piece = new Piece(workingPath, projectName);
-  delete piece;
+  {
+    PROFILE_SCOPE(prof::TOTAL);
+    Piece* piece = new Piece(workingPath, projectName);
+    delete piece;
+  }
+  prof::report();
   //delete outputFile;		//Sever
 
   time_t endTime;

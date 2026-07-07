@@ -31,6 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "Score.h"
 #include "Loudness.h"
 #include "../portable/PortableSynth.h"  // opt-in device-agnostic partial renderer
+#include "../../restructure/profiling/StageProfiler.h"  // opt-in stage timing
 
 //----------------------------------------------------------------------------//
 Sound::Sound()
@@ -192,6 +193,8 @@ MultiTrack* Sound::render(
     // calculate loudness for this sound.
     //------------------
 
+    PROFILE_SCOPE(prof::SOUND_RENDER);
+
     // negative loudness values signify that
     // loudness is not to be calculated for this sound.
     if (getParam(LOUDNESS) >= 0)
@@ -199,6 +202,7 @@ MultiTrack* Sound::render(
         cout << "\t Calculating Loudness..." << endl;
         //m_rate_type loudnessRate = m_rate_type(getParam(LOUDNESS_RATE));
         //Loudness::calculate(*this, loudnessRate);
+        PROFILE_SCOPE(prof::LOUDNESS);
         Loudness::calculate(*this);
     }
 
@@ -257,6 +261,7 @@ MultiTrack* Sound::render(
     /* ZIYUAN CHEN, July 2023: Partial::render() now returns (potentially spatialized) MultiTracks */
     MultiTrack* composite;
 
+    { PROFILE_SCOPE(prof::PARTIAL_SYNTH);
     if (size() == 0)
     {
         // there are no partials
@@ -277,6 +282,7 @@ MultiTrack* Sound::render(
             delete tempTrack;
         }
     }
+    }  // end PARTIAL_SYNTH
   
     /* Chain of Conversion:
      * Track ---do_reverb_Track-->       Track        in Partial::render()
@@ -298,7 +304,11 @@ MultiTrack* Sound::render(
     // do the reverb
     if (reverbObj != NULL) {
       cout << "\t Applying Reverb..." << endl;
-      MultiTrack &reverbedTrack = reverbObj->do_reverb_MultiTrack(*composite);
+      MultiTrack* reverbedTrackPtr;
+      { PROFILE_SCOPE(prof::SOUND_REVERB);
+        reverbedTrackPtr = &reverbObj->do_reverb_MultiTrack(*composite);
+      }
+      MultiTrack &reverbedTrack = *reverbedTrackPtr;
       delete composite;
 
 	//------------------
@@ -318,7 +328,10 @@ MultiTrack* Sound::render(
 	if (!spa_modified_)
 		return &reverbedTrack;
 
-	MultiTrack* mt = spatializer_->spatialize_MultiTrack(reverbedTrack, numChannels, sampleCount, samplingRate);
+	MultiTrack* mt;
+	{ PROFILE_SCOPE(prof::SPATIALIZE);
+	  mt = spatializer_->spatialize_MultiTrack(reverbedTrack, numChannels, sampleCount, samplingRate);
+	}
 
 	// delete the temporary track object that held the unspatialized reverbed sound
 	delete &reverbedTrack;
@@ -337,7 +350,10 @@ MultiTrack* Sound::render(
 	if (!spa_modified_)
 		return composite;
 
-	MultiTrack* mt = spatializer_->spatialize_MultiTrack(*composite, numChannels, sampleCount, samplingRate);
+	MultiTrack* mt;
+	{ PROFILE_SCOPE(prof::SPATIALIZE);
+	  mt = spatializer_->spatialize_MultiTrack(*composite, numChannels, sampleCount, samplingRate);
+	}
 	delete composite;
 	return mt;
       }
