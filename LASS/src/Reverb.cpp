@@ -30,6 +30,8 @@
 #include "Types.h"
 #include "Filter.h"
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #ifdef HAVE_CUDA
   #include "../CUDA/FilterGPU.h"
 #endif
@@ -418,17 +420,26 @@ SoundSample *Reverb::do_reverb_SoundSample(SoundSample *inWave, Envelope *percen
   delete percentReverb;
   percentReverb = temp;
 
-  #ifdef HAVE_CUDA
-  outWave=do_reverb_SoundSample_GPU(inWave, percentReverb, lpcfilter, apfilter);
-  #else
-    // create new SoundSample
-    outWave = new SoundSample(inWave->getSampleCount(),
-	  		    inWave->getSamplingRate());
-
-    for(i=0;i<inWave->getSampleCount();i++)
-      (*outWave)[i] = do_reverb((*inWave)[i],(float) i / inWave->getSampleCount()
-			      , percentReverb);
-  #endif
+  // Reverb backend selection. The CPU path is the reference algorithm and, once
+  // Envelope::getValue was made O(1), is both correct and fast; it also scales
+  // across cores (no single-GPU serialization). The CUDA path (FilterGPU.cu) is
+  // a parallel-scan APPROXIMATION that diverges from the CPU output (~ -59 dBFS)
+  // and serializes on the one GPU. We therefore default to CPU and keep the GPU
+  // path available via LASS_REVERB=gpu.
+#ifdef HAVE_CUDA
+  const char* rb = getenv("LASS_REVERB");
+  bool useGpu = (rb != nullptr && strcmp(rb, "gpu") == 0);
+  if (useGpu) {
+    outWave = do_reverb_SoundSample_GPU(inWave, percentReverb, lpcfilter, apfilter);
+    return outWave;
+  }
+#endif
+  // CPU path (default)
+  outWave = new SoundSample(inWave->getSampleCount(),
+                            inWave->getSamplingRate());
+  for(i=0;i<inWave->getSampleCount();i++)
+    (*outWave)[i] = do_reverb((*inWave)[i],(float) i / inWave->getSampleCount()
+                            , percentReverb);
 
   return outWave;
 }
