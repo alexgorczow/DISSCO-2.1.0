@@ -29,6 +29,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "StandardHeaders.h"
 
 #include <atomic>
+#include <deque>
+#include <map>
+#include <utility>
 #include "XmlReader.h"
 #include "Types.h"
 #include "Collection.h"
@@ -70,16 +73,29 @@ public:
     void add(Sound* _sound);
     
     /**
-    * Worker threads give the renderedSound back to the main thread to compositie
+    * Worker threads give the renderedSound back to the main thread to compositie.
+    * _seq is the sound's Score::add insertion index (canonical commit order for
+    * the deterministic composite modes; ignored by the legacy mode).
     **/
-    void addRenderedSound(m_time_type _startTime, MultiTrack* _renderedSound);
-    
+    void addRenderedSound(m_time_type _startTime, MultiTrack* _renderedSound,
+                          long _seq);
+
     /**
     * This function is called by the working threads to test if CMOD
-    * has finished adding sounds to the score. If vector<Sound*> sounds has 
+    * has finished adding sounds to the score. If vector<Sound*> sounds has
     * size 0 and doneGettingSoundObjects is true, the working thread returns.
     **/
     bool isDoneGettingSoundObjects(){return doneGettingSoundObjects;}
+
+    /**
+    * Composite ordering mode, selected once via the LASS_COMPOSITE env var:
+    *   unset/"legacy" -> arrival-order commits (historical behavior, default)
+    *   "det"          -> canonical insertion-order commits on the CPU
+    *   "det-gpu"      -> canonical order, adds performed on the GPU
+    * Both det modes produce ONE bit-identical output for any thread count.
+    **/
+    enum CompositeMode { COMPOSITE_LEGACY, COMPOSITE_DET, COMPOSITE_DET_GPU };
+    CompositeMode getCompositeMode(){return compositeMode_;}
     
     /**
     * This function is called by the compositeThread.
@@ -252,14 +268,43 @@ private:
    
   
     /**
-    * stores the Sound objects to be rendered.
+    * stores the Sound objects to be rendered, tagged with their insertion
+    * sequence number (the canonical order for the deterministic modes).
+    * Legacy mode pops from the back (preserving the historical LIFO order
+    * exactly); det modes pop from the front (FIFO) so the in-flight window
+    * stays contiguous and the reorder buffer cannot deadlock.
     **/
-    std::vector<Sound*> sounds;
-    
+    std::deque<std::pair<Sound*, long> > sounds;
+
     /**
-    * stores the rendered sounds for the main thread to composite them
+    * A rendered sound waiting to be committed into the score.
     **/
-    std::vector<std::pair<m_time_type, MultiTrack*>*> renderedSounds;
+    struct RenderedSound {
+        m_time_type startTime;
+        MultiTrack* mt;
+        long seq;
+        RenderedSound(m_time_type t, MultiTrack* m, long s)
+            : startTime(t), mt(m), seq(s) {}
+    };
+
+    /**
+    * stores the rendered sounds for the composite thread
+    **/
+    std::vector<RenderedSound*> renderedSounds;
+
+    /**
+    * Deterministic modes only (touched by the composite thread exclusively):
+    * out-of-order arrivals wait here until their sequence number is next.
+    **/
+    std::map<long, RenderedSound*> reorderBuffer;
+    long nextCommitSeq;
+    CompositeMode compositeMode_;
+
+    /**
+    * Commit one rendered sound into the score (grow + composite + free).
+    * Used by both the legacy drain and the deterministic in-order drain.
+    **/
+    void commitRenderedSound(RenderedSound* rs);
     
     /**
     * The MultiTrack object which holds the actual score

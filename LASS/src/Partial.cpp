@@ -34,6 +34,35 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "Iterator.h"
 
 //----------------------------------------------------------------------------//
+/* Deterministic-composite support (see restructure/06_DETERMINISTIC_COMPOSITE.md):
+   in LASS_COMPOSITE=det/det-gpu mode each render uses a PRIVATE RNG stream.
+   Rationale: the legacy srand(time(0)) + std::rand() below run on WORKER
+   threads while CMOD's producer thread is still drawing piece structure from
+   the same global stream (glibc rand() == random()); with >MAX_SOUND_OBJECTS
+   sounds the producer is mid-build during rendering, so workers trample its
+   sequence and the PIECE ITSELF becomes nondeterministic. A private minstd
+   stream (seeded per partial) removes the interference. For partials without
+   transients/random-wave the drawn values are discarded, so this changes no
+   output bits; with transients it replaces wall-clock seeding (already
+   nondeterministic) with a stable per-partial stream. Legacy mode is untouched. */
+static bool useDeterministicRng()
+{
+    static const char* cm = getenv("LASS_COMPOSITE");
+    static const bool det =
+        cm && (strcmp(cm, "det") == 0 || strcmp(cm, "det-gpu") == 0);
+    return det;
+}
+
+// glibc RAND_MAX is 2^31-1; minstd yields [1, 2^31-2], inside [0, RAND_MAX].
+static inline int drawRand(bool privateRng, unsigned long& state)
+{
+    if (!privateRng)
+        return std::rand();
+    state = (state * 48271ul) % 2147483647ul;   // minstd_rand
+    return (int)state;
+}
+
+//----------------------------------------------------------------------------//
 Partial::Partial()
 {
     // set some default parameters:
@@ -222,7 +251,12 @@ MultiTrack* Partial::render(int numChannels,
     m_time_type amptransprob;
     m_time_type freqtransprob;
 
-    srand(time(0));
+    const bool privateRng = useDeterministicRng();
+    unsigned long rngState =
+        (2654435761ul ^ (unsigned long)(long)getParam(PARTIAL_NUM))
+            % 2147483646ul + 1ul;   // any value in [1, 2^31-2]
+    if (!privateRng)
+      srand(time(0));
 
     //flags to tell if we are in a transient
     int amptransflag = 0;
@@ -259,11 +293,11 @@ MultiTrack* Partial::render(int numChannels,
 	//once counter reaches 0, check for transient
 	if(amptranscheck <= 0 && s+amptrans_width < numSamplesToRender)
 	  {
-	    random = ((float)std::rand()/(float)RAND_MAX);
+	    random = ((float)drawRand(privateRng, rngState)/(float)RAND_MAX);
 	    if(random <= amptransprob)
 	      {
-		trans_amplifier *= (float)std::rand()/(float)RAND_MAX;
-		if(((float)std::rand()/(float)RAND_MAX) <= 0.5)
+		trans_amplifier *= (float)drawRand(privateRng, rngState)/(float)RAND_MAX;
+		if(((float)drawRand(privateRng, rngState)/(float)RAND_MAX) <= 0.5)
 		  trans_amplifier *= -1;
 		amplifier = trans_amplifier;
 		amptransflag = 1;
@@ -309,11 +343,11 @@ MultiTrack* Partial::render(int numChannels,
 	//if we should check, check
 	if(freqtranscheck <= 0 && s+freqtrans_width < numSamplesToRender)
 	  {
-	    random = ((float)std::rand()/(float)RAND_MAX);
+	    random = ((float)drawRand(privateRng, rngState)/(float)RAND_MAX);
 	    if(random <= freqtransprob)
 	      {
-		trans_freqmod *= (float)std::rand()/(float)RAND_MAX;
-		if(((float)std::rand()/(float)RAND_MAX) <= 0.5)
+		trans_freqmod *= (float)drawRand(privateRng, rngState)/(float)RAND_MAX;
+		if(((float)drawRand(privateRng, rngState)/(float)RAND_MAX) <= 0.5)
 		  trans_freqmod *= -1;
 		freqmod = trans_freqmod;
 		freqtransflag = 1;
@@ -369,7 +403,7 @@ MultiTrack* Partial::render(int numChannels,
         {
             case 1:
                 // random
-                sample = amplitude * 2 * ((((double) std::rand()) / ((double) RAND_MAX)) - 0.5);
+                sample = amplitude * 2 * ((((double) drawRand(privateRng, rngState)) / ((double) RAND_MAX)) - 0.5);
                 break;
 
             default:

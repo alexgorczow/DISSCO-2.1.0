@@ -32,6 +32,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "Score.h"
 #include "Types.h"
 #include "../../restructure/profiling/StageProfiler.h"  // opt-in stage timing
+#ifdef HAVE_CUDA
+#include "../portable/CompositeCuda.h"  // deterministic GPU composite backend
+#endif
 
 //----------------------------------------------------------------------------//
 
@@ -40,8 +43,8 @@ struct ThreadEntry{
   //pointer to the score
   Score* score;
   int threadID;
-  //pointer to the vector<Sound*> sounds of the score
-  vector<Sound*, std::allocator<Sound*> >*  sounds;
+  //pointer to the (sound, insertion-seq) work queue of the score
+  std::deque<std::pair<Sound*, long> >* sounds;
   int numChannels;
   int samplingRate;
   pthread_mutex_t* mutexSoundVector;
@@ -74,7 +77,8 @@ void Score::add(Sound* _sound){
 
   // Lock the sounds vector
   pthread_mutex_lock( &mutexSoundVector );
-  sounds.push_back(_sound);
+  // The insertion index is the canonical commit order for the det modes.
+  sounds.push_back(std::make_pair(_sound, (long)soundObjectsCreated));
   soundObjectsCreated ++;
 
   //update scoreEndTime
@@ -105,8 +109,19 @@ void Score::add(Sound* _sound){
 **/
 void *render(void *_threadEntry){
   ThreadEntry threadEntry = *((ThreadEntry*) _threadEntry);
+  bool deterministic =
+      threadEntry.score->getCompositeMode() != Score::COMPOSITE_LEGACY;
   while(true){
     sem_wait(threadEntry.semFullSlotsSounds); // Wait for a full slot in sounds vector
+
+    /* Deterministic modes reserve the OUTPUT slot before taking a sound.
+       With FIFO dispatch this keeps every in-flight/buffered sound inside the
+       window [nextCommitSeq, nextCommitSeq + MAX_RENDERED_OBJECTS): the head of
+       the window always holds a slot, so it always lands and commits, freeing
+       slots -- the bounded reorder buffer cannot deadlock. (Legacy acquires the
+       slot after rendering, inside addRenderedSound, as before.) */
+    if (deterministic)
+      sem_wait(threadEntry.semEmptySlotsRendered);
 
     //Lock the sounds vector
     pthread_mutex_lock( threadEntry.mutexSoundVector );
@@ -117,22 +132,30 @@ void *render(void *_threadEntry){
                 *(threadEntry.soundsRendered)<<" of "<<
                 *(threadEntry.soundObjectsCreated)<<endl;
 
-          Sound* sound = threadEntry.sounds->back();
-          threadEntry.sounds->pop_back();
+          // legacy: LIFO (back) -- historical order, byte-identical output.
+          // det:    FIFO (front) -- contiguous dispatch window.
+          std::pair<Sound*, long> entry =
+              deterministic ? threadEntry.sounds->front()
+                            : threadEntry.sounds->back();
+          if (deterministic) threadEntry.sounds->pop_front();
+          else               threadEntry.sounds->pop_back();
+          Sound* sound = entry.first;
           pthread_mutex_unlock( threadEntry.mutexSoundVector );
 
           // Render the sound outside the critical section
           MultiTrack* renderedSound = sound->render(threadEntry.numChannels,threadEntry.samplingRate);
-      
-          threadEntry.score->addRenderedSound(sound->getParam(START_TIME), renderedSound);
+
+          threadEntry.score->addRenderedSound(sound->getParam(START_TIME), renderedSound, entry.second);
 
           delete sound;
 
           sem_post(threadEntry.semEmptySlotsSounds);  // Signal that there is an empty slot in sounds vector
-      } 
+      }
       else {
           pthread_mutex_unlock(threadEntry.mutexSoundVector);
           sem_post(threadEntry.semFullSlotsSounds);  // Put back the full slot since no sound was consumed
+          if (deterministic)
+            sem_post(threadEntry.semEmptySlotsRendered); // return unused reservation
           if (threadEntry.score->isDoneGettingSoundObjects())   // If the main thread is done adding sounds, return
             return _threadEntry;
       }
@@ -156,6 +179,29 @@ Score::Score(int _numThreads, int _numChannels, int _samplingRate )
     numChannels(_numChannels),
     samplingRate(_samplingRate)
 {
+  nextCommitSeq = 0;
+  compositeMode_ = COMPOSITE_LEGACY;
+  // Composite ordering backend (see Score.h). Same opt-in pattern as
+  // LASS_REVERB / LASS_PORTABLE_BACKEND: default preserves historical output.
+  if (const char* cm = getenv("LASS_COMPOSITE")) {
+    if (strcmp(cm, "det") == 0) compositeMode_ = COMPOSITE_DET;
+    else if (strcmp(cm, "det-gpu") == 0) {
+#ifdef HAVE_CUDA
+      compositeMode_ = COMPOSITE_DET_GPU;
+#else
+      cout << "Score: LASS_COMPOSITE=det-gpu but no CUDA in this build; "
+           << "using det (CPU). Output is bit-identical either way." << endl;
+      compositeMode_ = COMPOSITE_DET;
+#endif
+    }
+    else if (strcmp(cm, "legacy") != 0)
+      cout << "Score: unknown LASS_COMPOSITE '" << cm << "', using legacy." << endl;
+  }
+  if (compositeMode_ != COMPOSITE_LEGACY)
+    cout << "Score: deterministic composite ("
+         << (compositeMode_ == COMPOSITE_DET_GPU ? "GPU" : "CPU")
+         << ") -- output is bit-identical across thread counts." << endl;
+
   scoreEndTime = 1; //start with a small number
   scoreMultiTrackLength = scoreEndTime;
   m_sample_count_type newNumSamples =
@@ -200,46 +246,119 @@ Score::Score(int _numThreads, int _numChannels, int _samplingRate )
 }
 
 
-void Score::addRenderedSound(m_time_type _startTime, MultiTrack* _renderedSound){
+void Score::addRenderedSound(m_time_type _startTime, MultiTrack* _renderedSound,
+                             long _seq){
 
-  std::pair<m_time_type, MultiTrack*>* newPair = new pair<m_time_type, MultiTrack*>(_startTime, _renderedSound);
+  RenderedSound* newEntry = new RenderedSound(_startTime, _renderedSound, _seq);
   // active waiting for the vector size to be below 20 (if the main thread can't
   // composite the rendered sound as fast the speed of worker threads produce
   // rendered sounds, there is no need for the worker threads to rush.
-    sem_wait(&semEmptySlotsRendered);  // Wait for an empty slot in renderedSounds vector
+    if (compositeMode_ == COMPOSITE_LEGACY)
+      sem_wait(&semEmptySlotsRendered);  // Wait for an empty slot
+    // (det modes reserved their slot in render() before dispatch)
 
     pthread_mutex_lock(&mutexVectorRenderedSound);
-    renderedSounds.push_back(newPair);
+    renderedSounds.push_back(newEntry);
     pthread_mutex_unlock(&mutexVectorRenderedSound);
 
     sem_post(&semFullSlotsRendered);  // Signal that there is a full slot in renderedSounds vector
 
 }
 
+//------------------------------------------------------------------------------
+// Commit one rendered sound into the score: grow the score buffer if needed,
+// add the sound's samples (wave + amp) at its start offset, free the sound.
+// In legacy mode commits happen in ARRIVAL order (nondeterministic across
+// runs/thread counts); in det modes the caller guarantees insertion order.
+void Score::commitRenderedSound(RenderedSound* rs){
+  { PROFILE_SCOPE(prof::COMPOSITE);
+    checkScoreMultiTrackLength();
+#ifdef HAVE_CUDA
+    if (compositeMode_ == COMPOSITE_DET_GPU) {
+      // Keep the device score exactly as long as the host score would be
+      // (covers the initial 1-second buffer when no growth ever triggers).
+      portable::compositeCudaEnsure(numChannels,
+          (m_sample_count_type)(scoreMultiTrackLength * float(samplingRate)));
+      // Same adds, applied on the device in the same order. The offset uses
+      // the EXACT expression from SoundSample::composite so index arithmetic
+      // matches the CPU path bit-for-bit.
+      m_sample_count_type skip =
+          m_sample_count_type(rs->startTime * float(samplingRate));
+      int tracks = rs->mt->size() < numChannels ? rs->mt->size() : numChannels;
+      for (int t = 0; t < tracks; ++t) {
+        Track* tr = rs->mt->get(t);
+        SoundSample& w = tr->getWave();
+        portable::compositeCudaAdd(t, false, w.getData(), w.getSampleCount(), skip);
+        if (tr->hasAmp()) {
+          SoundSample& a = tr->getAmp();
+          portable::compositeCudaAdd(t, true, a.getData(), a.getSampleCount(), skip);
+        }
+      }
+    }
+    else
+#endif
+    scoreMultiTrack->composite(*(rs->mt), rs->startTime);
+  }
+  delete rs->mt;
+  delete rs;
+}
+
 
 void Score::compositeRenderedSounds(){
   while (true){
-    sem_wait(&semFullSlotsRendered); 
+    sem_wait(&semFullSlotsRendered);
 
     pthread_mutex_lock( &mutexVectorRenderedSound );
 
     if(renderedSounds.size()){
-      pair<m_time_type,MultiTrack*>* thisPair = renderedSounds.back();
+      RenderedSound* thisEntry = renderedSounds.back();
       renderedSounds.pop_back();
       pthread_mutex_unlock( &mutexVectorRenderedSound );
-      sem_post(&semEmptySlotsRendered);
-      { PROFILE_SCOPE(prof::COMPOSITE);
-        checkScoreMultiTrackLength();
-        scoreMultiTrack->composite(*(thisPair->second), thisPair->first);
+
+      if (compositeMode_ == COMPOSITE_LEGACY) {
+        // Historical behavior: free the slot at pop, commit in arrival order.
+        sem_post(&semEmptySlotsRendered);
+        commitRenderedSound(thisEntry);
       }
-      delete thisPair->second;
-      delete thisPair;
+      else {
+        /* Deterministic drain: park the arrival in the reorder buffer, then
+           commit every consecutive sequence number that is now available.
+           Slots are released only at commit, matching the reserve-at-dispatch
+           in render() so the window stays bounded by MAX_RENDERED_OBJECTS. */
+        reorderBuffer[thisEntry->seq] = thisEntry;
+        while (!reorderBuffer.empty() &&
+               reorderBuffer.begin()->first == nextCommitSeq) {
+          RenderedSound* head = reorderBuffer.begin()->second;
+          reorderBuffer.erase(reorderBuffer.begin());
+          commitRenderedSound(head);
+          nextCommitSeq++;
+          sem_post(&semEmptySlotsRendered);
+        }
+      }
     }
     else{
       pthread_mutex_unlock( &mutexVectorRenderedSound );
       sem_post(&semFullSlotsRendered);
-      if (workerThreadsAllJoined)
+      if (workerThreadsAllJoined) {
+        if (!reorderBuffer.empty()) {
+          // Cannot happen if every dispatched sound arrived; defensive only.
+          cerr << "WARNING: Score: " << reorderBuffer.size()
+               << " rendered sounds never committed (missing seq "
+               << nextCommitSeq << ")." << endl;
+        }
+#ifdef HAVE_CUDA
+        if (compositeMode_ == COMPOSITE_DET_GPU) {
+          // Bring the device score home once; replaces the untouched stub.
+          MultiTrack* fetched =
+              portable::compositeCudaFetch(numChannels, samplingRate);
+          if (fetched) {
+            delete scoreMultiTrack;
+            scoreMultiTrack = fetched;
+          }
+        }
+#endif
         return;
+      }
     }
 
   }
@@ -301,6 +420,16 @@ void Score::checkScoreMultiTrackLength(){
       scoreMultiTrackLength = scoreEndTime;
       m_sample_count_type newNumSamples =
         (m_sample_count_type) (scoreMultiTrackLength * float(samplingRate));
+
+#ifdef HAVE_CUDA
+      if (compositeMode_ == COMPOSITE_DET_GPU) {
+        // The score lives on the device; grow it there (zero-fill + exact
+        // prefix copy). The host stub buffer is left untouched until fetch.
+        portable::compositeCudaEnsure(numChannels, newNumSamples);
+        cout<<"Get a longer score with length = " << scoreEndTime.load() << " seconds."<<endl;
+        return;
+      }
+#endif
       MultiTrack* newScoreMultiTrack = new MultiTrack
         (numChannels,newNumSamples,samplingRate);
 

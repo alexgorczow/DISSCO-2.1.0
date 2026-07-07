@@ -83,10 +83,11 @@ project "lass"
       prebuildcommands {
         "mkdir -p $(OBJDIR)",
         "nvcc -c ../LASS/CUDA/FilterGPU.cu -Xcompiler -fPIC -g -G -o $(OBJDIR)/FilterGPU.o",
-        "nvcc -c ../LASS/portable/PartialRendererCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -g -G -o $(OBJDIR)/PartialRendererCuda.o"
+        "nvcc -c ../LASS/portable/PartialRendererCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -g -G -o $(OBJDIR)/PartialRendererCuda.o",
+        "nvcc -c ../LASS/portable/CompositeCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -g -G -o $(OBJDIR)/CompositeCuda.o"
       }
       postbuildcommands {
-        "ar rcs $(TARGET) $(OBJDIR)/FilterGPU.o $(OBJDIR)/PartialRendererCuda.o",
+        "ar rcs $(TARGET) $(OBJDIR)/FilterGPU.o $(OBJDIR)/PartialRendererCuda.o $(OBJDIR)/CompositeCuda.o",
         "ranlib $(TARGET)"
       }
     configuration "Release" 
@@ -94,10 +95,11 @@ project "lass"
       prebuildcommands {
         "mkdir -p $(OBJDIR)",
         "nvcc -c ../LASS/CUDA/FilterGPU.cu -Xcompiler -fPIC -O3 -o $(OBJDIR)/FilterGPU.o",
-        "nvcc -c ../LASS/portable/PartialRendererCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -O3 -o $(OBJDIR)/PartialRendererCuda.o"
+        "nvcc -c ../LASS/portable/PartialRendererCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -O3 -o $(OBJDIR)/PartialRendererCuda.o",
+        "nvcc -c ../LASS/portable/CompositeCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -O3 -o $(OBJDIR)/CompositeCuda.o"
       }
       postbuildcommands {
-        "ar rcs $(TARGET) $(OBJDIR)/FilterGPU.o $(OBJDIR)/PartialRendererCuda.o",
+        "ar rcs $(TARGET) $(OBJDIR)/FilterGPU.o $(OBJDIR)/PartialRendererCuda.o $(OBJDIR)/CompositeCuda.o",
         "ranlib $(TARGET)"
       }
 
