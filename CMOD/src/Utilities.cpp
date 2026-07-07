@@ -271,64 +271,42 @@ Utilities::~Utilities(){
 //----------------------------------------------------------------------------//
 
 DOMElement* Utilities::getEventElement(EventType _type, string _eventName){
-  map<string, DOMElement*>::iterator it;
+  map<string, DOMElement*>* m = NULL;
   lastField = "N/A ";
   lastType = "N/A ";
   lastObject = "N/A ";
 
   switch((int)_type){
-    case 0:
-      it = topEventElements.find(_eventName);
-      lastEvent = "Top " + _eventName;
-      break;
-    case 1:
-      it = highEventElements.find(_eventName);
-      lastEvent = "High " + _eventName;
-      break;
-    case 2:
-      it = midEventElements.find(_eventName);
-      lastEvent = "Mid " + _eventName;
-      break;
-    case 3:
-      it = lowEventElements.find(_eventName);
-      lastEvent = "Low " + _eventName;
-      break;
-    case 4:
-      it = bottomEventElements.find(_eventName);
-      lastEvent = "Bottom " + _eventName;
-      break;
-    case 5:
-      it = spectrumElements.find(_eventName);
-      lastField = "Modifiers ";
-      break;
-    case 6:
-      it = envelopeElements.find(_eventName);
-      lastField = "Modifiers ";
-      break;
-    case 7:
-      it = sieveElements.find(_eventName);
-      lastField = "Modifiers ";
-      break;
-    case 8:
-      it = spatializationElements.find(_eventName);
-      lastField = "Modifiers ";
-      break;
-    case 9:
-      it = patternElements.find(_eventName);
-      lastField = "Modifiers ";
-      break;
-    case 10:
-      it = reverbElements.find(_eventName);
-      lastField = "Modifiers ";
-      break;
-    case 12:
-      it = notesElements.find(_eventName);
-      lastField = "Modifiers ";
-      break;
-    case 13:
-      it = filterElements.find(_eventName);
-      lastField = "Modifiers ";
-      break;
+    case 0:  m = &topEventElements;            lastEvent = "Top " + _eventName;    break;
+    case 1:  m = &highEventElements;           lastEvent = "High " + _eventName;   break;
+    case 2:  m = &midEventElements;            lastEvent = "Mid " + _eventName;    break;
+    case 3:  m = &lowEventElements;            lastEvent = "Low " + _eventName;    break;
+    case 4:  m = &bottomEventElements;         lastEvent = "Bottom " + _eventName; break;
+    case 5:  m = &spectrumElements;            lastField = "Modifiers ";           break;
+    case 6:  m = &envelopeElements;            lastField = "Modifiers ";           break;
+    case 7:  m = &sieveElements;               lastField = "Modifiers ";           break;
+    case 8:  m = &spatializationElements;      lastField = "Modifiers ";           break;
+    case 9:  m = &patternElements;             lastField = "Modifiers ";           break;
+    case 10: m = &reverbElements;              lastField = "Modifiers ";           break;
+    case 12: m = &notesElements;               lastField = "Modifiers ";           break;
+    case 13: m = &filterElements;              lastField = "Modifiers ";           break;
+  }
+
+  // Robustness: previously this did `return it->second` on the raw find()
+  // result, which is undefined behavior (a segfault) when the name is not in
+  // the map -- e.g. a project that references an event missing from the palette
+  // (7_final.dissco references Mid "m4", which is not registered). Return NULL
+  // with a clear diagnostic instead so callers can fail gracefully.
+  if (m == NULL) {
+    cerr << "ERROR: getEventElement: unknown event type " << (int)_type
+         << " for '" << _eventName << "'." << endl;
+    return NULL;
+  }
+  map<string, DOMElement*>::iterator it = m->find(_eventName);
+  if (it == m->end()) {
+    cerr << "ERROR: event '" << _eventName << "' (type " << (int)_type
+         << ") is referenced but not defined in the project palette." << endl;
+    return NULL;
   }
   return it->second;
 }

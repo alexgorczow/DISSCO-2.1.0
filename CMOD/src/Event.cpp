@@ -1084,6 +1084,16 @@ void Event::checkEvent(bool buildResult) {
   string childEventName = XMLTC(discretePackage->GFEC());
   DOMElement* childElement = utilities->getEventElement(childEventType, childEventName);
 
+  // getEventElement returns NULL when the referenced event is not in the
+  // palette. Fail with a clear message instead of dereferencing a bad pointer
+  // (previously an undefined-behavior segfault deep in the Event constructor).
+  if (childElement == NULL) {
+    cerr << "ERROR: Event '" << name << "' references child event '"
+         << childEventName << "' (type " << (int)childEventType
+         << "), which is not defined in the project. Aborting." << endl;
+    exit(1);
+  }
+
   Event* e;
   if (childEventType == eventBottom){
     e = (Event*) new Bottom(childElement, tsChild, childType, tempo, utilities, spatializationElement, 
