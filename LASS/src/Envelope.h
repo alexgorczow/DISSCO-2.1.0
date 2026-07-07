@@ -320,6 +320,21 @@ private:
   m_rate_type currentInterpolatorRate_;
 
   /**
+   *	getValue() memoization (bit-exact). getValue() quantizes each segment to
+   *	101 samples and reads one via a freshly built + iterated interpolator; the
+   *	returned value depends only on (segment, sample in [0,100]) and is
+   *	independent of totalLength. We cache the 101 exact iterator outputs per
+   *	segment so repeated getValue() calls become a table lookup instead of
+   *	rebuilding and stepping an interpolator up to 100 times each call.
+   *	Invalidated on any shape mutation (see invalidateGetValueCache_()).
+   **/
+  std::vector<std::vector<m_value_type> > valueTables_;
+  bool valueTablesBuilt_ = false;
+  m_time_type getValueCachedLength_ = -1;
+  void buildValueTables_();
+  void invalidateGetValueCache_() { valueTablesBuilt_ = false; getValueCachedLength_ = -1; }
+
+  /**
    *	This function populate the private member variable with actual
    *	interpolators.
    *	\param rate The rate

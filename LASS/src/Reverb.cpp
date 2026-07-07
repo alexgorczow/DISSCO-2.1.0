@@ -270,9 +270,15 @@ m_sample_type Reverb::do_reverb(m_sample_type x_t, float x_value)
 m_sample_type Reverb::do_reverb(m_sample_type x_t, float x_value, Envelope *percentReverbinput)
 {
   m_sample_type y;
-  Envelope* temp = new Envelope(*percentReverbinput);
-  delete percentReverb;
-  percentReverb = temp;
+  // PERF (bit-exact): the per-sample reverb loop calls this with percentReverb
+  // itself, so the copy below was a semantic no-op performed once *per sample*
+  // (a heap alloc + Envelope deep-copy + free, millions of times). Skip it when
+  // the input already is our envelope; preserve the swap for any other caller.
+  if (percentReverbinput != percentReverb) {
+    Envelope* temp = new Envelope(*percentReverbinput);
+    delete percentReverb;
+    percentReverb = temp;
+  }
 
   // run the sample through various comb filters (for effeciency
   // reasons, I hard coded this (instead of looping from 0 to
@@ -519,10 +525,12 @@ SoundSample *Reverb::constructAmp(SoundSample *wave)
 		}
 	    }
 	}
-      else if(maxAmp < (*wave)[min(ctr1+windowRadius, nSamples)])
+      else if(maxAmp < (*wave)[min(ctr1+windowRadius, nSamples-1)])
 	{
-	  maxAmp = (*wave)[min(ctr1+windowRadius, nSamples)];
-	  maxAmpPos = min(ctr1+windowRadius, nSamples);
+	  // (index clamp: valid samples are 0..nSamples-1; the original used
+	  //  nSamples here, reading one element past the end of the buffer)
+	  maxAmp = (*wave)[min(ctr1+windowRadius, nSamples-1)];
+	  maxAmpPos = min(ctr1+windowRadius, nSamples-1);
 	}
       (*ampWave)[ctr1] = maxAmp;
     }
