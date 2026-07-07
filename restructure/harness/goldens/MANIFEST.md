@@ -16,9 +16,10 @@ md5sum /tmp/g/SoundFiles/*.aiff     # must equal the md5 below
 
 ## Entries
 
-| project | seed | threads | duration | format | md5 |
-|---|---|---|---|---|---|
-| tutorial_seed42_1thread.dissco | 42 | 1 | 30 s | 24-bit AIFF stereo 44.1 kHz | `6cdcc107206c9eeec203302efdddf375` |
+| project | seed | threads | duration | format | md5 | backends verified identical |
+|---|---|---|---|---|---|---|
+| tutorial_seed42_1thread.dissco | 42 | 1 | 30 s | 24-bit AIFF stereo 44.1 kHz | `6cdcc107206c9eeec203302efdddf375` | original, serial, cuda |
+| Tutorial.dissco (seed 777, 1 thread) | 777 | 1 | 30 s | 24-bit AIFF stereo 44.1 kHz | `99b3cde0f00f566faaf2ecac85efc586` | original, serial, cuda |
 
 ## Measured determinism budget (machine: RTX 4050, g++ 12.2, 2026-07-06)
 

@@ -22,6 +22,12 @@ C1 covers constant params **and** the linear-interpolator scan path (glissando +
 amplitude envelope). C2/C4 route all 50 sounds of the tutorial through the new
 kernel via `LASS_PORTABLE_BACKEND={serial,cuda}` at 1 thread.
 
+**Second, independent piece.** A different stochastic composition (tutorial
+project, seed 777 → a different Score, ~different waveform) rendered three ways
+at 1 thread — original (env unset), portable Serial, portable CUDA — produced
+**one identical md5** (`99b3cde0…`) across all three. Parity is not an artifact
+of the one tutorial.
+
 **Why CUDA came out bit-exact (better than the ≤4 LSB budget):** the phase/
 amplitude pre-pass runs on the host identically to Serial; only the map
 `amp·sin(2π·phase)` runs on the GPU. Any libdevice-vs-glibc `sin(double)`
