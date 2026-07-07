@@ -16,10 +16,19 @@ md5sum /tmp/g/SoundFiles/*.aiff     # must equal the md5 below
 
 ## Entries
 
-| project | seed | threads | duration | format | md5 | backends verified identical |
-|---|---|---|---|---|---|---|
-| tutorial_seed42_1thread.dissco | 42 | 1 | 30 s | 24-bit AIFF stereo 44.1 kHz | `6cdcc107206c9eeec203302efdddf375` | original, serial, cuda |
-| Tutorial.dissco (seed 777, 1 thread) | 777 | 1 | 30 s | 24-bit AIFF stereo 44.1 kHz | `99b3cde0f00f566faaf2ecac85efc586` | original, serial, cuda |
+**Reference algorithm = the CPU reverb** (the true original). As of the reverb
+backend change, the default build uses the correct+fast CPU reverb; the old CUDA
+reverb (a ~−59 dBFS approximation) is opt-in via `LASS_REVERB=gpu`.
+
+Default (CPU reverb) golden md5s — the correct references:
+
+| project | seed | threads | md5 (CPU reverb, default) | md5 (`LASS_REVERB=gpu`) |
+|---|---|---|---|---|
+| Tutorial.dissco | 42 | 1 | `12d2ff21332c22453b51e883c58c8177` | `6cdcc107206c9eeec203302efdddf375` |
+| Tutorial.dissco | 777 | 1 | `d45d383b60cb6db6ccdf7be8a85cf389` | `99b3cde0f00f566faaf2ecac85efc586` |
+
+`portable-serial` synthesis (`LASS_PORTABLE_BACKEND=serial`) is bit-exact with
+the default at every seed (verified by `../parity_regression.sh`).
 
 ## Measured determinism budget (machine: RTX 4050, g++ 12.2, 2026-07-06)
 
