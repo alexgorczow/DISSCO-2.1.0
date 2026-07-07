@@ -14,3 +14,11 @@ UpgradeProjectFormat
 
 # macOS
 .DS_Store
+
+# Render outputs and local analysis artifacts
+SoundFiles/
+*.aiff
+valgrind_full.log
+*:Zone.Identifier
+__pycache__/
+LASS/portable/bench_map
