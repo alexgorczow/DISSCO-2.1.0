@@ -31,6 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "Score.h"
 #include "Types.h"
+#include "../../restructure/profiling/StageProfiler.h"  // opt-in stage timing
 
 //----------------------------------------------------------------------------//
 
@@ -85,7 +86,9 @@ void Score::add(Sound* _sound){
   }
     // figure in the reverb die-out period
   if(reverbObj != NULL)
-  scoreEndTime += reverbObj->getDecay();
+  // atomic<float> has no operator+= before C++20; this runs under
+  // mutexSoundVector so the load/store pair cannot lose an update.
+  scoreEndTime.store(scoreEndTime.load() + reverbObj->getDecay());
 
   // Unlock the sounds vector
   pthread_mutex_unlock( &mutexSoundVector );
@@ -225,8 +228,10 @@ void Score::compositeRenderedSounds(){
       renderedSounds.pop_back();
       pthread_mutex_unlock( &mutexVectorRenderedSound );
       sem_post(&semEmptySlotsRendered);
-      checkScoreMultiTrackLength();
-      scoreMultiTrack->composite(*(thisPair->second), thisPair->first);
+      { PROFILE_SCOPE(prof::COMPOSITE);
+        checkScoreMultiTrackLength();
+        scoreMultiTrack->composite(*(thisPair->second), thisPair->first);
+      }
       delete thisPair->second;
       delete thisPair;
     }
@@ -272,6 +277,7 @@ MultiTrack* Score::joinThreadsAndMix(){
   if(reverbObj != NULL)
   {
     cout << "Applying reverb to the score..." << endl;
+    PROFILE_SCOPE(prof::FINAL_REVERB);
     MultiTrack *tmp = & reverbObj->do_reverb_MultiTrack(*scoreMultiTrack);
     delete scoreMultiTrack;
     scoreMultiTrack = tmp;
@@ -279,7 +285,9 @@ MultiTrack* Score::joinThreadsAndMix(){
 
   // perform Clipping management on the composite:
   cout << "Managing Clipping for the score..." << endl;
-  manageClipping(scoreMultiTrack, cmm_);
+  { PROFILE_SCOPE(prof::CLIP);
+    manageClipping(scoreMultiTrack, cmm_);
+  }
   // return the composite:
   return scoreMultiTrack;
 }
@@ -301,7 +309,7 @@ void Score::checkScoreMultiTrackLength(){
       scoreMultiTrack = newScoreMultiTrack;
 
       //pthread_mutex_unlock( &mutexVectorRenderedSound );
-      cout<<"Get a longer score with length = " << scoreEndTime << " seconds."<<endl;
+      cout<<"Get a longer score with length = " << scoreEndTime.load() << " seconds."<<endl;
 
   }
 }

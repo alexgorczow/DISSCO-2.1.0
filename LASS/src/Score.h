@@ -28,6 +28,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //----------------------------------------------------------------------------//
 #include "StandardHeaders.h"
 
+#include <atomic>
 #include "XmlReader.h"
 #include "Types.h"
 #include "Collection.h"
@@ -268,8 +269,11 @@ private:
     /**
     * The max end time seen among the added sound objects
     **/
-    m_time_type scoreEndTime;
-    m_time_type scoreMultiTrackLength;
+    // Shared across the main (add), worker (render), and composite threads.
+    // Written under mutexSoundVector but read lock-free by the composite thread
+    // (checkScoreMultiTrackLength), so make it atomic to avoid a data race.
+    std::atomic<m_time_type> scoreEndTime;
+    m_time_type scoreMultiTrackLength;   // touched only by the composite thread
     
     /**
     * Number of threads
@@ -296,8 +300,10 @@ private:
     * A flag to indicate that the Score object has done receiving all the 
     * sound objects.
     **/
-    bool doneGettingSoundObjects;
-    bool workerThreadsAllJoined;
+    // Cross-thread flags: written by main/composite, read lock-free by workers
+    // and the composite thread. Atomic to avoid data races.
+    std::atomic<bool> doneGettingSoundObjects;
+    std::atomic<bool> workerThreadsAllJoined;
   
     /**
     * mutex to protect vector<Sound*> sounds
