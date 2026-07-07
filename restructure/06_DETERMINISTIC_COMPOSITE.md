@@ -159,4 +159,54 @@ a stable stream.
 
 parity_regression.sh: 4/4 pass after the change.
 
-*(bench_1min / bench_10min matrices + performance below)*
+### bench_1min (60 s, 360 sounds — exceeds the 200-sound queue cap)
+
+| run | md5 | wall |
+|---|---|---|
+| det @1t | `c236f2b1…` | 123.6 s |
+| det @20t | `c236f2b1…` | 21.1 s |
+| det @20t run 2 | `c236f2b1…` | 24.1 s |
+| **det-gpu @20t** | **`c236f2b1…`** | 22.2 s |
+| legacy @20t run 1 | `392e6a86…` | 21.2 s |
+| legacy @20t run 2 | `1f23f178…` (≠ run 1!) | 20.6 s |
+
+**Four-way bit-identity across thread count, runs, and devices** — while legacy
+does not even reproduce itself run-to-run on this piece (the worker-RNG
+trampling of §5; before the RNG fix even det@1t differed from det@20t).
+Determinism costs ~0 wall time here.
+
+### bench_10min (600 s, 360 larger sounds, @20t, single rep)
+
+| mode | wall | peak RSS | md5 |
+|---|---|---|---|
+| legacy | 192.5 s | 1.82 GB | `b0496b9c…` (not reproducible) |
+| det | 211.0 s | 1.87 GB | `51fa8676…` |
+| **det-gpu** | **208.9 s** | **1.55 GB** | **`51fa8676…` == det** |
+
+- **Cross-device bit-identity holds at 10-minute scale.**
+- det costs ~9.6% wall vs legacy at this scale (single rep; FIFO dispatch +
+  slot-reserve head-of-line waiting when the head sound is slow). det-gpu
+  reclaims about a quarter of that (commits are async kernel launches) and
+  saves **0.27 GB** host RSS (the score lives on the device).
+- Honest speedup framing: the composite drain was ~0.6% of aggregate CPU, so
+  this work was never going to shrink wall time much — the prize is that the
+  **fast multi-threaded path is now the reference path** (md5-reproducible),
+  plus a provably-bit-exact GPU offload and lower host memory. If more raw
+  throughput is wanted later, the head-of-line stall can be tuned by widening
+  MAX_RENDERED_OBJECTS for det modes (memory-for-latency trade).
+
+### memcheck (det path, 4 threads, 3 s tutorial)
+451,437 allocs = 451,437 frees, **0 bytes in use at exit, 0 errors** — the
+reorder buffer / deque / slot discipline leak nothing.
+
+## 7. Caveats & future work
+
+- **Detuned pieces** draw `random()` in workers (Sound::setup_detuning_env);
+  det mode removes the *trampling* but a detuned piece's draws still depend on
+  scheduling. Fix (future): draw detune envelopes on the producer thread or
+  seed per-sound from the sequence number.
+- det-gpu currently syncs each H2D staging copy; pinned double-buffering could
+  hide even that (unmeasurable at current piece sizes).
+- MAX_RENDERED_OBJECTS=20 bounds the reorder window; a det-mode env override
+  would trade memory for less head-of-line waiting on pieces with very uneven
+  sound durations.
