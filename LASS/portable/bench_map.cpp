@@ -44,14 +44,16 @@ int main(int argc, char** argv) {
       cpuBest = std::min(cpuBest, ms(t0, t1));
     }
 
-    // GPU timing (includes malloc/transfer/free — the realistic per-call cost)
+    // GPU timing (transfer + kernel; persistent buffers after the 1st rep, so
+    // min-of-reps reflects the realistic amortized per-call cost).
     double gpuBest = 1e30;
     for (int r = 0; r < 3; ++r) {
       auto t0 = clk::now();
-      portable::renderMapCuda(amp.data(), phase.data(), waveGpu.data(), ampGpu.data(), n);
+      portable::renderMapCuda(amp.data(), phase.data(), waveGpu.data(), n);
       auto t1 = clk::now();
       gpuBest = std::min(gpuBest, ms(t0, t1));
     }
+    (void)ampGpu;
 
     // parity spot-check
     double maxAbs = 0;

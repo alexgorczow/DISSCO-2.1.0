@@ -80,8 +80,14 @@ struct SampleMapWorklet {
 
 // CUDA map dispatch (defined in PartialRendererCuda.cu, compiled by nvcc).
 // Declared unconditionally; the Serial build never references it.
+//
+// Computes only wave[s] = amplitude[s]*sin(2*pi*phase[s]) on the device. The
+// amp channel (ampOut[s] = amplitude[s] in the worklet) is a pure identity, so
+// the caller fills it with a host memcpy instead of a redundant GPU round-trip.
+// Uses persistent thread_local device buffers (grown on demand) so repeated
+// per-partial calls do not re-cudaMalloc/free.
 void renderMapCuda(const float* amplitude, const float* phase,
-                   float* wave, float* ampOut, long n);
+                   float* wave, long n);
 
 /**
  * Returns true if the partial can be rendered by the portable no-transient

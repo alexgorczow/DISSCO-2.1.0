@@ -161,7 +161,11 @@ MultiTrack* renderPartial(Partial& p,
   const float* ampSrc = amp.data();
   const float* phSrc  = ph.data();
   if (backend == Backend::Cuda) {
-    renderMapCuda(ampSrc, phSrc, waveData, ampData, N);
+    // Device computes wave only; the amp channel is the identity ampOut[s] =
+    // amplitude[s] (see SampleMapWorklet), so fill it on the host bit-exactly
+    // instead of a redundant H2D+D2H of an unchanged array.
+    renderMapCuda(ampSrc, phSrc, waveData, N);
+    std::memcpy(ampData, ampSrc, (size_t)N * sizeof(float));
   } else {
     SampleMapWorklet worklet;
     DeviceAdapterSerial::Schedule((std::size_t)N, [&](std::size_t s) {
