@@ -169,6 +169,11 @@ private:
     static const double BANDS[24][7];
     /** There are 24 critical bands **/
     static const int NUM_BANDS = 24;
+
+public:
+    /** Read-only access to the critical-band table for the gpu-fast device
+    *   port of this model (LASS/portable/GpuFastSound.cu). **/
+    static const double (*bandsTable())[7] { return BANDS; }
 };
 
 

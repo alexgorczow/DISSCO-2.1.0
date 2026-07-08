@@ -31,6 +31,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "Score.h"
 #include "Loudness.h"
 #include "../portable/PortableSynth.h"  // opt-in device-agnostic partial renderer
+#ifdef HAVE_CUDA
+#include "../portable/GpuFastSound.h"   // opt-in fused device loudness+synth
+#endif
 #include "../../restructure/profiling/StageProfiler.h"  // opt-in stage timing
 
 //----------------------------------------------------------------------------//
@@ -195,9 +198,26 @@ MultiTrack* Sound::render(
 
     PROFILE_SCOPE(prof::SOUND_RENDER);
 
+    /* gpu-fast v1 (LASS_PIPELINE=gpu-fast, opt-in): fused device loudness +
+       synthesis for eligible sounds — see LASS/portable/GpuFastSound.h. When
+       it succeeds it REPLACES Loudness::calculate + the per-partial render
+       loop (loudness scalars are computed on-device); the filter/reverb/
+       spatialize tail below is unchanged. NULL means ineligible => the
+       original CPU path runs exactly as before. */
+    MultiTrack* gpuFastComposite = NULL;
+#ifdef HAVE_CUDA
+    if (size() != 0 && portable::gpuFastEnabled()) {
+        m_time_type gfDur = getParam(DURATION);
+        m_sample_count_type gfCount = (m_sample_count_type)
+            ((m_time_type)getTotalDuration() * (m_time_type)samplingRate);
+        gpuFastComposite = portable::renderSoundGpuFast(
+            *this, numChannels, gfCount, gfDur, samplingRate);
+    }
+#endif
+
     // negative loudness values signify that
     // loudness is not to be calculated for this sound.
-    if (getParam(LOUDNESS) >= 0)
+    if (gpuFastComposite == NULL && getParam(LOUDNESS) >= 0)
     {
         cout << "\t Calculating Loudness..." << endl;
         //m_rate_type loudnessRate = m_rate_type(getParam(LOUDNESS_RATE));
@@ -262,7 +282,12 @@ MultiTrack* Sound::render(
     MultiTrack* composite;
 
     { PROFILE_SCOPE(prof::PARTIAL_SYNTH);
-    if (size() == 0)
+    if (gpuFastComposite != NULL)
+    {
+        // fused device loudness+synth already produced the partial composite
+        composite = gpuFastComposite;
+    }
+    else if (size() == 0)
     {
         // there are no partials
         // create a new empty MultiTrack:

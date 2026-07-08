@@ -84,10 +84,11 @@ project "lass"
         "mkdir -p $(OBJDIR)",
         "nvcc -c ../LASS/CUDA/FilterGPU.cu -Xcompiler -fPIC -g -G -o $(OBJDIR)/FilterGPU.o",
         "nvcc -c ../LASS/portable/PartialRendererCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -g -G -o $(OBJDIR)/PartialRendererCuda.o",
-        "nvcc -c ../LASS/portable/CompositeCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -g -G -o $(OBJDIR)/CompositeCuda.o"
+        "nvcc -c ../LASS/portable/CompositeCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -g -G -o $(OBJDIR)/CompositeCuda.o",
+        "nvcc -c ../LASS/portable/GpuFastSound.cu -I../LASS/portable -DHAVE_CUDA -std=c++17 -Xcompiler -fPIC -g -G -o $(OBJDIR)/GpuFastSound.o"
       }
       postbuildcommands {
-        "ar rcs $(TARGET) $(OBJDIR)/FilterGPU.o $(OBJDIR)/PartialRendererCuda.o $(OBJDIR)/CompositeCuda.o",
+        "ar rcs $(TARGET) $(OBJDIR)/FilterGPU.o $(OBJDIR)/PartialRendererCuda.o $(OBJDIR)/CompositeCuda.o $(OBJDIR)/GpuFastSound.o",
         "ranlib $(TARGET)"
       }
     configuration "Release" 
@@ -96,10 +97,11 @@ project "lass"
         "mkdir -p $(OBJDIR)",
         "nvcc -c ../LASS/CUDA/FilterGPU.cu -Xcompiler -fPIC -O3 -o $(OBJDIR)/FilterGPU.o",
         "nvcc -c ../LASS/portable/PartialRendererCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -O3 -o $(OBJDIR)/PartialRendererCuda.o",
-        "nvcc -c ../LASS/portable/CompositeCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -O3 -o $(OBJDIR)/CompositeCuda.o"
+        "nvcc -c ../LASS/portable/CompositeCuda.cu -I../LASS/portable -DHAVE_CUDA -Xcompiler -fPIC -O3 -o $(OBJDIR)/CompositeCuda.o",
+        "nvcc -c ../LASS/portable/GpuFastSound.cu -I../LASS/portable -DHAVE_CUDA -std=c++17 -Xcompiler -fPIC -O3 -o $(OBJDIR)/GpuFastSound.o"
       }
       postbuildcommands {
-        "ar rcs $(TARGET) $(OBJDIR)/FilterGPU.o $(OBJDIR)/PartialRendererCuda.o $(OBJDIR)/CompositeCuda.o",
+        "ar rcs $(TARGET) $(OBJDIR)/FilterGPU.o $(OBJDIR)/PartialRendererCuda.o $(OBJDIR)/CompositeCuda.o $(OBJDIR)/GpuFastSound.o",
         "ranlib $(TARGET)"
       }
 

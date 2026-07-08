@@ -97,6 +97,37 @@ Replaces the naive 0.04× with the real number. Honest read:
   freed for CMOD event building. On server GPUs (Delta A100s) every one of
   these numbers scales up ~5–8×.
 
+## Step 3 results — gpu-fast v1 SHIPPED (`LASS_PIPELINE=gpu-fast`)
+
+`LASS/portable/GpuFastSound.{h,cu}` + a 3-line seam in `Sound::render`: fused
+device **loudness + synthesis** per eligible Sound (the two dominant stages).
+Host iterates dynamic variables once into RLE streams (one packed upload);
+device expands, runs the 24-band loudness map (float transcendentals, incl. the
+reference's `bandGamma[0]` max-write quirk), tremolo/vibrato/carrier **double**
+prefix scans, `sinf` synthesis, deterministic in-order partial sum; one D2H;
+the filter/reverb/Pan/composite tail is unchanged code. Ineligible sounds
+(transients, random wave, detune envelopes, per-partial reverb, non-44.1k,
+loudness off) fall back to the untouched CPU path.
+
+| check | result |
+|---|---|
+| default build+mode | `12d2ff21` — **byte-identical, untouched** |
+| determinism (gpu-fast + det composite) | tutorial `9c5b50cd`, bench_1min `e7e04184` — **identical across 1t/8t/20t and run-to-run**, 0 fallbacks |
+| accuracy vs bit-exact reference — tutorial (short sounds) | max 4 LSB, RMS **−151.7 dBFS** (composite-budget class) |
+| accuracy vs bit-exact reference — bench_1min (4 s sounds) | RMS **−67.6 dBFS** = the CPU float chains' own phase drift (spike T2: −59 dBFS @4 s); the GPU tracks the *double* reference at ~0.3 LSB — reported, not asserted, per the restated contract |
+| speed — tutorial | **1.50× @1t**, 0.95× @20t (50 light 10-partial sounds; GPU sections serialize on a mutex) |
+| speed — bench_1min (24-partial sounds) | **1.35× @1t, 1.19× @20t** (111.5→82.6 s; 25.0→21.1 s) |
+
+### v1 limitations → the remaining speed ladder
+1. Host still iterates every dynamic variable per sample (the old pre-pass
+   cost) — moving envelope evaluation on-device is the next big step.
+2. One global GPU mutex (one sound in flight): per-thread streams/arenas or
+   sound batching would un-serialize the 20-worker case.
+3. Reverb still CPU per-sound; the step-2 batched kernels want a Score-level
+   batching point to pay off.
+4. Loudness kernel is `float` (contract-compliant); a double variant would
+   pull bench-piece accuracy toward the tutorial's −151 dBFS at some FP64 cost.
+
 ## Verdict & revised plan
 
 1. **Accuracy gate: PASSED** (reverb scan −165 dBFS, length-independent).
