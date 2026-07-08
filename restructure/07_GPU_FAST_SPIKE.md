@@ -155,14 +155,21 @@ RLE uploads — envelope streams change every sample, so "compression" shipped
   (the "v2 had no effect" mystery was a stale archive).
 
 ### v1 limitations → the remaining speed ladder
-1. Host still iterates every dynamic variable per sample (the old pre-pass
+*(status 2026-07-08 / v3: #1 **done** — see Step 4 above; #2 largely mooted by
+the 10× smaller device section, residual only on light-sound pieces; #3 and #4
+remain open — #3 is now the dominant on-node lever.)*
+1. ✅ Host still iterates every dynamic variable per sample (the old pre-pass
    cost) — moving envelope evaluation on-device is the next big step.
-2. One global GPU mutex (one sound in flight): per-thread streams/arenas or
-   sound batching would un-serialize the 20-worker case.
+   **Done in v3.**
+2. ◐ One global GPU mutex (one sound in flight): per-thread streams/arenas or
+   sound batching would un-serialize the 20-worker case. **Largely mooted by
+   v3; fold residual into #3's batching point.**
 3. Reverb still CPU per-sound; the step-2 batched kernels want a Score-level
-   batching point to pay off.
+   batching point to pay off. **Open — #1 remaining lever (reverb 31% +
+   spatialize 29% of residual).**
 4. Loudness kernel is `float` (contract-compliant); a double variant would
    pull bench-piece accuracy toward the tutorial's −151 dBFS at some FP64 cost.
+   **Open.**
 
 ## Verdict & revised plan
 
