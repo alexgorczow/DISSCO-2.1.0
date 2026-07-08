@@ -118,6 +118,42 @@ loudness off) fall back to the untouched CPU path.
 | speed — tutorial | **1.50× @1t**, 0.95× @20t (50 light 10-partial sounds; GPU sections serialize on a mutex) |
 | speed — bench_1min (24-partial sounds) | **1.35× @1t, 1.19× @20t** (111.5→82.6 s; 25.0→21.1 s) |
 
+## Step 4 results — gpu-fast v3: **5–15× target HIT**
+
+v1 profiling showed the host dynamic-variable iteration was 69% of gpu-fast
+time (213 ms/sound) and the device section 23% (72 ms, inflated by degenerate
+RLE uploads — envelope streams change every sample, so "compression" shipped
+67 MB/sound). Three fixes, landing together:
+
+1. **Device-side envelope evaluation** (the real rung-1): new
+   `Envelope::exportDeviceSegments()` exports the exact per-segment step
+   structure the iterator would walk; `evalSegKernel` computes closed forms on
+   the GPU (linear `vFrom + j·delta`; the exponential interpolator's
+   `y1+(y2−y1)(1−e^{αj/steps})/(1−e^α)` formula with its 0→0.0001 substitutions
+   and α=±3, in `powf`). Host iteration eliminated for envelope streams;
+   uploads shrink from megabytes to a few segment descriptors.
+2. **Constant-DV shortcut**: `Constant` streams emit one RLE run without the
+   176k-step iteration (phase/frequency/detuning collapse).
+3. **Batched scans**: 3 `thrust::scan_by_key` calls (transform-iterator keys)
+   replace 72 per-partial device scans per sound.
+
+| bench_1min (360 sounds, 24 partials) | CPU (det) | gpu-fast v3 | speedup |
+|---|---|---|---|
+| @1t | 111.5 s | **10.9 s** | **10.2×** |
+| @20t | 19.7 s | **2.7 s** | **7.4×** |
+
+- per-sound: pre-pass 213→7.4 ms, device 72→7.3 ms; reverb (31%) and
+  spatialize (29%) are now the dominant CPU stages — the next frontier.
+- determinism: `9127d8b1` identical across 1t/20t/run-to-run (tutorial:
+  `c41910aa`, also 3-way identical). **gpu-fast goldens version with the
+  implementation** — v3 md5s supersede v1's (closed-form float envelopes).
+- accuracy vs bit-exact reference: tutorial −77.1 dBFS (float `powf` envelope
+  class), bench −67.2 dBFS (unchanged: the CPU reference's own phase drift
+  dominates). Defaults untouched: 12/12 regression, tutorial `12d2ff21`.
+- build gotcha for posterity: premake only re-archives `liblass.a` when a
+  `.cpp` changes — after editing only `.cu` files, `rm lib/liblass.a` first
+  (the "v2 had no effect" mystery was a stale archive).
+
 ### v1 limitations → the remaining speed ladder
 1. Host still iterates every dynamic variable per sample (the old pre-pass
    cost) — moving envelope evaluation on-device is the next big step.

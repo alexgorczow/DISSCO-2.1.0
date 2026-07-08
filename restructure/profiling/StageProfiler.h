@@ -43,6 +43,8 @@ enum Stage {
   PARTIAL_SYNTH,  // partial synthesis + per-sound composite    (aggregate)
   SOUND_REVERB,   // per-Sound reverb                           (aggregate)
   SPATIALIZE,     // per-Sound spatialize                       (aggregate)
+  GF_PREPASS,     // gpu-fast host DV iteration + RLE           (aggregate)
+  GF_GPU,         // gpu-fast device section (mutex-held)       (aggregate)
   COMPOSITE,      // Score composite drain                         (thread)
   FINAL_REVERB,   // score-level reverb in joinThreadsAndMix         (wall)
   CLIP,           // clipping management                             (wall)
@@ -61,6 +63,8 @@ inline const char* stageName(int s) {
     "partial synth",
     "sound reverb",
     "spatialize",
+    "gpu-fast pre-pass",
+    "gpu-fast device",
     "composite drain",
     "final reverb",
     "clip management",
@@ -130,7 +134,7 @@ inline void report() {
 
   // denominator for the aggregate render sub-stages' share
   double agg_sum = 0;
-  for (int s = LOUDNESS; s <= SPATIALIZE; ++s) agg_sum += r.ns[s].load() / NS;
+  for (int s = LOUDNESS; s <= GF_GPU; ++s) agg_sum += r.ns[s].load() / NS;
   if (agg_sum <= 0) agg_sum = 1e-9;
 
   std::fprintf(stderr,
@@ -147,7 +151,7 @@ inline void report() {
     double denom = isWall(s) ? total_ms : agg_sum;
     double share = 100.0 * ms / denom;
     // indent aggregate sub-stages under Sound::render for readability
-    const char* prefix = (s >= LOUDNESS && s <= SPATIALIZE) ? "  " : "";
+    const char* prefix = (s >= LOUDNESS && s <= GF_GPU) ? "  " : "";
     char label[48];
     std::snprintf(label, sizeof(label), "%s%s", prefix, stageName(s));
     std::fprintf(stderr, "%-22s %11.2f %8llu %11.3f %7.1f%%\n",

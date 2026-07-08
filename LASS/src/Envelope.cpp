@@ -717,6 +717,44 @@ Iterator<m_value_type> Envelope::valueIterator()
 }
 
 //----------------------------------------------------------------------------//
+// gpu-fast support: export the exact per-segment step structure valueIterator()
+// walks (see Envelope.h). Reuses valueIterator()'s own regeneration logic so
+// generatedSegmentLengths_ matches the current duration/samplingRate, then
+// mirrors addInterpolators' (prev -> segments_[i+1].y) pairing and the
+// interpolator's steps = (count)(segmentLength * rate) computation (the
+// interpolator's internal rate rescale (duration/maxTime)*rate is exactly
+// rate here because maxTime == duration for the 2-entry interpolators).
+bool Envelope::exportDeviceSegments(std::vector<DeviceSegment>& out)
+{
+    out.clear();
+    if (segments_->size() < 2) return false;
+
+    if (totalLength_ != getDuration() || currentInterpolatorRate_ != getSamplingRate()) {
+        totalLength_ = getDuration();
+        currentInterpolatorRate_ = getSamplingRate();
+        generateLengths(totalLength_);
+        addInterpolators(currentInterpolatorRate_);
+    }
+
+    int numSegments = segments_->size() - 1;
+    m_value_type prev = segments_->get(0).y;
+    for (int i = 0; i < numSegments; i++) {
+        int t = getSegmentInterpolationType(i);
+        if (t == CUBIC_SPLINE) { out.clear(); return false; }
+        DeviceSegment ds;
+        ds.type  = (t == EXPONENTIAL) ? 1 : 0;
+        ds.vFrom = prev;
+        ds.vTo   = segments_->get(i + 1).y;
+        m_value_type segLen = generatedSegmentLengths_->get(i);
+        ds.steps = (long)((segLen - (m_value_type)0.0) *
+                          (m_value_type)currentInterpolatorRate_);
+        out.push_back(ds);
+        prev = segments_->get(i + 1).y;
+    }
+    return true;
+}
+
+//----------------------------------------------------------------------------//
 void Envelope::generateLengths(m_time_type totalLength)
 {
 	int iNumSegments = segments_->size() - 1;

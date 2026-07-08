@@ -243,6 +243,23 @@ public:
   Iterator<m_value_type> valueIterator();
 
   /**
+   *	One iterator-equivalent segment for device-side evaluation (gpu-fast).
+   *	A segment emits exactly `steps` samples: LINEAR (type 0) as
+   *	vFrom + j*((vTo-vFrom)/steps) for j in [0, steps); EXPONENTIAL (type 1)
+   *	as the interpolator's closed form for j in [1, steps]. steps==0 segments
+   *	emit one vFrom sample (matching the iterator's behavior).
+   **/
+  struct DeviceSegment { long steps; int type; m_value_type vFrom, vTo; };
+
+  /**
+   *	Exports the exact segment/step structure the valueIterator() would walk
+   *	at the CURRENT duration/samplingRate (same generateLengths state).
+   *	Returns false if any segment is CUBIC_SPLINE (no device closed form) —
+   *	the caller must fall back to host iteration.
+   **/
+  bool exportDeviceSegments(std::vector<DeviceSegment>& out);
+
+  /**
    *	This function scales all Entries' values by this factor.
    *	\param factor The factor by which to scale
    **/

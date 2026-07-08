@@ -25,12 +25,16 @@
 #include "../src/MultiTrack.h"
 #include "../src/SoundSample.h"
 #include "../src/DynamicVariable.h"
+#include "../src/Constant.h"
+#include "../src/Envelope.h"
 #include "../src/Iterator.h"
 #include "../src/Loudness.h"
 
 #include <cuda_runtime.h>
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/transform_iterator.h>
 #include <thrust/execution_policy.h>
 
 #include <cstdio>
@@ -39,6 +43,7 @@
 #include <cmath>
 #include <vector>
 #include <mutex>
+#include "../../restructure/profiling/StageProfiler.h"
 
 namespace {
 
@@ -62,6 +67,12 @@ enum Param { P_WAVESHAPE = 0, P_TREMAMP, P_TREMRATE, P_VIBAMP, P_VIBRATE,
 
 struct Run { float v; int len; };
 
+// key iterator for scan_by_key: element i belongs to partial i/N
+struct KeyOfIndex {
+  long N;
+  __host__ __device__ long operator()(long i) const { return i / N; }
+};
+
 // expand runs -> dense: one thread per sample, binary search its run.
 __global__ void expandKernel(const float* __restrict__ vals,
                              const int* __restrict__ starts,  // run start sample
@@ -74,6 +85,40 @@ __global__ void expandKernel(const float* __restrict__ vals,
     if (starts[mid] <= i) lo = mid; else hi = mid - 1;
   }
   dense[i] = vals[lo];
+}
+
+// One envelope segment for on-device evaluation (see Envelope::DeviceSegment).
+struct GfSeg { long start; long steps; int type; float vFrom, vTo; };
+
+// evaluate an envelope stream from its segment table: one thread per sample,
+// binary search the segment, closed-form value. Past the last emitted sample
+// the value HOLDS (matching EnvelopeIterator's past-end behavior).
+__global__ void evalSegKernel(const GfSeg* __restrict__ segs, int nSegs,
+                              float* __restrict__ dense, long n) {
+  long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  const GfSeg& last = segs[nSegs - 1];
+  long total = last.start + last.steps;
+  long s = (i < total) ? i : (total - 1);          // hold last value past end
+  int lo = 0, hi = nSegs - 1;
+  while (lo < hi) {
+    int mid = (lo + hi + 1) >> 1;
+    if (segs[mid].start <= s) lo = mid; else hi = mid - 1;
+  }
+  const GfSeg& g = segs[lo];
+  long j = s - g.start;
+  float v;
+  if (g.type == 1) {                                // EXPONENTIAL, j in [1,steps]
+    float y1 = (g.vFrom == 0.0f) ? 0.0001f : g.vFrom;
+    float y2 = (g.vTo   == 0.0f) ? 0.0001f : g.vTo;
+    float alpha = (y1 > y2) ? -3.0f : 3.0f;
+    float I = (float)(j + 1) / (float)g.steps;
+    v = y1 + (y2 - y1) * ((1.0f - powf(2.718282f, I * alpha)) /
+                          (1.0f - powf(2.718282f, alpha)));
+  } else {                                          // LINEAR, j in [0,steps)
+    v = g.vFrom + (float)j * ((g.vTo - g.vFrom) / (float)g.steps);
+  }
+  dense[i] = v;
 }
 
 // Loudness model: one thread per sample; loops partials (<=64) and 24 bands.
@@ -179,6 +224,7 @@ struct Arena {
   float*  dense = nullptr;   long denseCap = 0;   // NPARAM+3 dense float arrays
   double* scans = nullptr;   long scansCap = 0;   // 3 double arrays
   float*  runsV = nullptr;   int* runsS = nullptr; int runsCap = 0;
+  GfSeg*  segs = nullptr;    int segsCap = 0;
   float*  mono = nullptr;    long monoCap = 0;
   float*  scal = nullptr;    int scalCap = 0;     // maxWS + relAmp
   bool bandsUp = false;
@@ -194,7 +240,7 @@ struct Arena {
       if (!ck(cudaMalloc(&scans, PN * 3 * sizeof(double)), "scans")) return false;
       scansCap = PN * 3;
     }
-    if (nRuns > runsCap) {
+    (void)0; if (nRuns > runsCap) {
       if (runsV) cudaFree(runsV); if (runsS) cudaFree(runsS);
       if (!ck(cudaMalloc(&runsV, nRuns * sizeof(float)), "runsV")) return false;
       if (!ck(cudaMalloc(&runsS, nRuns * sizeof(int)), "runsS")) return false;
@@ -251,9 +297,11 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
     if (!canRenderPortably(snd.get(p))) return nullptr;  // transients/random/reverb
 
   // ---- host: iterate all dynamic variables into RLE streams ----
+  PROFILE_SCOPE(prof::GF_PREPASS);
   typedef Iterator<m_value_type> ValIter;
   std::vector<std::vector<float> > runsV(P * NPARAM);
   std::vector<std::vector<int> >   runsS(P * NPARAM);
+  std::vector<std::vector<Envelope::DeviceSegment> > segLists(P * NPARAM);
   std::vector<float> hMaxWS(P), hRelAmp(P);
   std::vector<float> buf(N);
   float maxAmp = 0.0f;
@@ -287,39 +335,50 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
     DynamicVariable* detuning_env = part.getParam(DETUNING_ENV).clone();
     detuning_env->setDuration(duration);
 
-    ValIter ws  = part.getParam(WAVE_SHAPE).valueIterator();
-    ValIter ta  = part.getParam(TREMOLO_AMP).valueIterator();
-    ValIter tr  = part.getParam(TREMOLO_RATE).valueIterator();
-    ValIter va  = part.getParam(VIBRATO_AMP).valueIterator();
-    ValIter vr  = part.getParam(VIBRATO_RATE).valueIterator();
-    ValIter ph  = part.getParam(PHASE).valueIterator();
-    ValIter fq  = frequency_env->valueIterator();
-    ValIter fe  = freq_env->valueIterator();
-    ValIter de  = detuning_env->valueIterator();
-    ValIter fl  = part.getParam(FREQUENCY).valueIterator();   // loudness freq
+    /* Constant-DV shortcut: a Constant's iterator yields getValue() N times,
+       so its stream is one run -- emit it without the N-step iteration. This
+       collapses most streams (tremolo/vibrato/phase/frequency are typically
+       Constants); only real envelopes still iterate. Identical values, so the
+       compressed stream -- and the device result -- is unchanged. */
+    #define CONST_OR_ITER(DVEXPR, SLOT)                                     \
+      { DynamicVariable& dv_ = (DVEXPR);                                    \
+        Envelope* e_ = dynamic_cast<Envelope*>(&dv_);                       \
+        if (Constant* c_ = dynamic_cast<Constant*>(&dv_)) {                 \
+          runsV[p*NPARAM+SLOT].assign(1, (float)c_->getValue());            \
+          runsS[p*NPARAM+SLOT].assign(1, 0);                                \
+        } else if (e_ && e_->exportDeviceSegments(segLists[p*NPARAM+SLOT])) {\
+          /* evaluated on-device from the segment table */                  \
+        } else {                                                            \
+          ValIter it_ = dv_.valueIterator();                                \
+          for (long n_ = 0; n_ < N; ++n_) buf[n_] = it_.next();             \
+          rleCompress(buf, runsV[p*NPARAM+SLOT], runsS[p*NPARAM+SLOT]);     \
+        } }
 
-    std::vector<float> tremAmpB(N), tremRateB(N), vibAmpB(N), vibRateB(N),
-                       phaseB(N), freqBaseB(N), freqLoudB(N);
-    for (long n = 0; n < N; ++n) {
-      buf[n]      = ws.next();
-      tremAmpB[n] = ta.next();
-      tremRateB[n]= tr.next();
-      vibAmpB[n]  = va.next();
-      vibRateB[n] = vr.next();
-      phaseB[n]   = ph.next();
-      freqBaseB[n]= fq.next() * fe.next() * de.next();
-      freqLoudB[n]= fl.next();
+    CONST_OR_ITER(part.getParam(WAVE_SHAPE),   P_WAVESHAPE);
+    CONST_OR_ITER(part.getParam(TREMOLO_AMP),  P_TREMAMP);
+    CONST_OR_ITER(part.getParam(TREMOLO_RATE), P_TREMRATE);
+    CONST_OR_ITER(part.getParam(VIBRATO_AMP),  P_VIBAMP);
+    CONST_OR_ITER(part.getParam(VIBRATO_RATE), P_VIBRATE);
+    CONST_OR_ITER(part.getParam(PHASE),        P_PHASEOFF);
+    CONST_OR_ITER(part.getParam(FREQUENCY),    P_FREQLOUD);   // loudness freq
+    #undef CONST_OR_ITER
+
+    // freqBase = frequency * freq_env * detuning: all-constant => one run
+    Constant* cf = dynamic_cast<Constant*>(frequency_env);
+    Constant* ce = dynamic_cast<Constant*>(freq_env);
+    Constant* cd = dynamic_cast<Constant*>(detuning_env);
+    if (cf && ce && cd) {
+      float v = (float)(cf->getValue() * ce->getValue() * cd->getValue());
+      runsV[p*NPARAM+P_FREQBASE].assign(1, v);
+      runsS[p*NPARAM+P_FREQBASE].assign(1, 0);
+    } else {
+      ValIter fq = frequency_env->valueIterator();
+      ValIter fe = freq_env->valueIterator();
+      ValIter de = detuning_env->valueIterator();
+      for (long n = 0; n < N; ++n) buf[n] = fq.next() * fe.next() * de.next();
+      rleCompress(buf, runsV[p*NPARAM+P_FREQBASE], runsS[p*NPARAM+P_FREQBASE]);
     }
     delete frequency_env; delete freq_env; delete detuning_env;
-
-    rleCompress(buf,       runsV[p*NPARAM+P_WAVESHAPE], runsS[p*NPARAM+P_WAVESHAPE]);
-    rleCompress(tremAmpB,  runsV[p*NPARAM+P_TREMAMP],  runsS[p*NPARAM+P_TREMAMP]);
-    rleCompress(tremRateB, runsV[p*NPARAM+P_TREMRATE], runsS[p*NPARAM+P_TREMRATE]);
-    rleCompress(vibAmpB,   runsV[p*NPARAM+P_VIBAMP],   runsS[p*NPARAM+P_VIBAMP]);
-    rleCompress(vibRateB,  runsV[p*NPARAM+P_VIBRATE],  runsS[p*NPARAM+P_VIBRATE]);
-    rleCompress(phaseB,    runsV[p*NPARAM+P_PHASEOFF], runsS[p*NPARAM+P_PHASEOFF]);
-    rleCompress(freqBaseB, runsV[p*NPARAM+P_FREQBASE], runsS[p*NPARAM+P_FREQBASE]);
-    rleCompress(freqLoudB, runsV[p*NPARAM+P_FREQLOUD], runsS[p*NPARAM+P_FREQLOUD]);
 
     hMaxWS[p]  = part.getParam(WAVE_SHAPE).getMaxValue();
     hRelAmp[p] = part.getParam(RELATIVE_AMPLITUDE);
@@ -329,6 +388,7 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
   if (maxAmp <= 0.0f) return nullptr;
 
   // ---- device ----
+  PROFILE_SCOPE(prof::GF_GPU);
   std::lock_guard<std::mutex> lock(g_mutex);
   long PN = (long)P * N;
   int maxRuns = 1;
@@ -382,6 +442,16 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
         packS.insert(packS.end(), ss.begin(), ss.end());
       }
     int totRuns = off[P*NPARAM];
+    static const bool dbg = getenv("LASS_GPUFAST_DEBUG") != nullptr;
+    static bool dbgOnce = false;
+    if (dbg && !dbgOnce) {
+      dbgOnce = true;
+      static const char* pn[NPARAM] = {"waveShape","tremAmp","tremRate","vibAmp",
+                                       "vibRate","phaseOff","freqBase","freqLoud"};
+      fprintf(stderr, "gpu-fast[dbg] P=%d N=%ld totRuns=%d\n", P, N, totRuns);
+      for (int k = 0; k < NPARAM; ++k)
+        fprintf(stderr, "  %-10s p0_runs=%d\n", pn[k], off[k*P+1]-off[k*P]);
+    }
     if (totRuns > g_arena.runsCap) {
       if (g_arena.runsV) cudaFree(g_arena.runsV);
       if (g_arena.runsS) cudaFree(g_arena.runsS);
@@ -391,11 +461,44 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
     }
     CKF(cudaMemcpy(g_arena.runsV, packV.data(), totRuns*sizeof(float), cudaMemcpyHostToDevice), "runsV");
     CKF(cudaMemcpy(g_arena.runsS, packS.data(), totRuns*sizeof(int), cudaMemcpyHostToDevice), "runsS");
+
+    // pack envelope segment tables (device-evaluated streams)
+    std::vector<GfSeg> hSegs; std::vector<int> soff(P*NPARAM+1, 0);
     for (int k = 0; k < NPARAM; ++k)
       for (int p = 0; p < P; ++p) {
         int idx = k*P + p;
-        expandKernel<<<(unsigned)gbN, TB>>>(g_arena.runsV + off[idx], g_arena.runsS + off[idx],
-                                            off[idx+1]-off[idx], d + (long)k*PN + (long)p*N, N);
+        auto& sl = segLists[p*NPARAM+k];
+        soff[idx+1] = soff[idx] + (int)sl.size();
+        long start = 0;
+        for (auto& es : sl) {
+          GfSeg g;
+          g.start = start;
+          if (es.steps <= 0) { g.steps = 1; g.type = 0; g.vFrom = es.vFrom; g.vTo = es.vFrom; }
+          else { g.steps = es.steps; g.type = es.type; g.vFrom = es.vFrom; g.vTo = es.vTo; }
+          start += g.steps;
+          hSegs.push_back(g);
+        }
+      }
+    if (!hSegs.empty()) {
+      if ((int)hSegs.size() > g_arena.segsCap) {
+        if (g_arena.segs) cudaFree(g_arena.segs);
+        CKF(cudaMalloc(&g_arena.segs, hSegs.size()*sizeof(GfSeg)), "segs");
+        g_arena.segsCap = (int)hSegs.size();
+      }
+      CKF(cudaMemcpy(g_arena.segs, hSegs.data(), hSegs.size()*sizeof(GfSeg),
+                     cudaMemcpyHostToDevice), "segs");
+    }
+
+    for (int k = 0; k < NPARAM; ++k)
+      for (int p = 0; p < P; ++p) {
+        int idx = k*P + p;
+        int nSeg = soff[idx+1] - soff[idx];
+        if (nSeg > 0)
+          evalSegKernel<<<(unsigned)gbN, TB>>>(g_arena.segs + soff[idx], nSeg,
+                                               d + (long)k*PN + (long)p*N, N);
+        else
+          expandKernel<<<(unsigned)gbN, TB>>>(g_arena.runsV + off[idx], g_arena.runsS + off[idx],
+                                              off[idx+1]-off[idx], d + (long)k*PN + (long)p*N, N);
       }
   }
   CKF(cudaMemcpy(g_arena.scal, hMaxWS.data(), P*sizeof(float), cudaMemcpyHostToDevice), "scal");
@@ -408,30 +511,25 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
                                         dLoud, P, N);
   CKF(cudaGetLastError(), "loudness");
 
-  // ---- phase scans (double) ----
+  // ---- phase scans (double), batched: ONE scan_by_key per phase type over
+  // all partials (key = i/N via a transform iterator; no key array in VRAM)
+  // instead of P separate device scans (72 launches+syncs per sound in v1). ----
   long gbPN = (PN + TB - 1) / TB;
+  auto keys = thrust::make_transform_iterator(
+      thrust::make_counting_iterator<long>(0), KeyOfIndex{N});
   // tremolo: EXCLUSIVE prefix of tremRate/sr, per partial
   buildIncKernel<<<(unsigned)gbPN, TB>>>(d + (long)P_TREMRATE*PN, dS3, PN, (float)samplingRate);
-  for (int p = 0; p < P; ++p)
-    thrust::exclusive_scan(thrust::device,
-        thrust::device_pointer_cast(dS3 + (long)p*N),
-        thrust::device_pointer_cast(dS3 + (long)p*N + N),
-        thrust::device_pointer_cast(dS1 + (long)p*N), 0.0);
+  thrust::exclusive_scan_by_key(thrust::device, keys, keys + PN,
+      thrust::device_pointer_cast(dS3), thrust::device_pointer_cast(dS1), 0.0);
   // vibrato: EXCLUSIVE prefix of vibRate/sr -> then frequency increments
   buildIncKernel<<<(unsigned)gbPN, TB>>>(d + (long)P_VIBRATE*PN, dS3, PN, (float)samplingRate);
-  for (int p = 0; p < P; ++p)
-    thrust::exclusive_scan(thrust::device,
-        thrust::device_pointer_cast(dS3 + (long)p*N),
-        thrust::device_pointer_cast(dS3 + (long)p*N + N),
-        thrust::device_pointer_cast(dS2 + (long)p*N), 0.0);
+  thrust::exclusive_scan_by_key(thrust::device, keys, keys + PN,
+      thrust::device_pointer_cast(dS3), thrust::device_pointer_cast(dS2), 0.0);
   freqKernel<<<(unsigned)gbPN, TB>>>(d + (long)P_FREQBASE*PN, d + (long)P_VIBAMP*PN,
                                      dS2, dS3, PN, (float)samplingRate);
   // carrier: INCLUSIVE prefix of frequency/sr
-  for (int p = 0; p < P; ++p)
-    thrust::inclusive_scan(thrust::device,
-        thrust::device_pointer_cast(dS3 + (long)p*N),
-        thrust::device_pointer_cast(dS3 + (long)p*N + N),
-        thrust::device_pointer_cast(dS2 + (long)p*N));
+  thrust::inclusive_scan_by_key(thrust::device, keys, keys + PN,
+      thrust::device_pointer_cast(dS3), thrust::device_pointer_cast(dS2));
 
   // ---- synth + deterministic partial sum ----
   synthKernel<<<(unsigned)gbPN, TB>>>(dLoud, d + (long)P_WAVESHAPE*PN,
