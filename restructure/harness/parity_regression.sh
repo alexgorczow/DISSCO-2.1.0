@@ -13,6 +13,10 @@
 #                         stream itself is byte-identical across two runs
 # and reports the GPU-reverb divergence (LASS_REVERB=gpu) as a measured number.
 #
+# NOTE: checks 1-2 (LEGACY default) are reliable only on a QUIET machine --
+# under load the legacy composition itself drifts (worker rand() interleaving;
+# see goldens/MANIFEST.md contract revision). det/stream checks (3-6) are
+# load-immune (stress-verified) and should never flake.
 # Checks 1-2 rely on the single-thread + fixed-seed contract; checks 3-4 are
 # the deterministic-composite contract (restructure/06_DETERMINISTIC_COMPOSITE.md).
 # Golden md5s for known projects live in goldens/MANIFEST.md.

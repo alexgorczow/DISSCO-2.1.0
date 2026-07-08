@@ -2,8 +2,17 @@
 
 Golden AIFFs are **not** committed (they are large, derived artifacts). Instead we
 commit the deterministic input and the md5 + metrics needed to regenerate and
-verify them. The single-thread + fixed-seed contract makes regeneration
-bit-exact (see `../../01_RESTRUCTURE_PLAN.md` §3).
+verify them.
+
+> **⚠ Contract revision (2026-07-09):** the original "single-thread +
+> fixed-seed = bit-exact" claim holds for the LEGACY mode **only on a quiet
+> machine**. Under CPU load, worker `srand(time(0))`/`rand()` calls interleave
+> with the producer's composition draws (glibc `rand()` == `random()`) and the
+> PIECE ITSELF changes — demonstrated on the tutorial at 1 thread (3 loaded
+> runs → 3 md5s). The **det modes are the reliable contract**: stress-verified
+> bit-stable on tutorial and bench_1min at any thread count. Legacy goldens
+> below remain valid but are reproducible only under low load; the harness's
+> legacy checks may flake on a busy machine (det checks never should).
 
 ## Regenerate + verify
 
