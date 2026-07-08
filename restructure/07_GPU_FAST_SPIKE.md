@@ -71,6 +71,32 @@ cleanup** of this overhead could recover a large part of what gpu-fast targets
 (reverb = 44% of render), at a fraction of the complexity — and it raises the
 bar gpu-fast must clear to be worth it.
 
+## Step 2 results — batched single-kernel prototype (`bench_batch.cu`)
+
+One CUDA block per (sound × comb), D-block loop inside the kernel
+(`__syncthreads`, zero host round-trips), previous-block L in shared memory,
+chunked Hillis-Steele affine scan; allpass = one thread per (sound, residue
+class) replaying exact CPU float order; whole batch = one launch per stage.
+
+| batch | CPU 1-core | GPU kernels | GPU e2e (PCIe) | error |
+|---|---|---|---|---|
+| 16 × 4 s | 23.1 ms | 3.2 ms (**7.2×**) | 5.4 ms (4.3×) | 1.00 LSB24 / −161 dBFS |
+| 64 × 4 s | 92.0 ms | 13.0 ms (**7.1×**) | 22.0 ms (4.2×) | 1.00 LSB24 / −163 dBFS |
+| 360 × 4 s | 515 ms | 60.8 ms (**8.5×**, 1044 Msmpl/s) | 106 ms (4.8×) | 1.50 LSB24 / −163 dBFS |
+
+Replaces the naive 0.04× with the real number. Honest read:
+- Error is stable at scale (−163 dBFS, max 1.5 LSB) — accuracy holds in the
+  production architecture too.
+- Reverb-on-GPU ≈ **8.5× one core ≈ rough parity with the whole 20-core pool**
+  on raw reverb math. PCIe transfers halve it — which is precisely the argument
+  for the **fused** pipeline: synth produces the buffers on-device, composite
+  consumes them on-device, so the reverb pays no transfer at all.
+- The gpu-fast end-to-end case therefore rests on the map-shaped stages
+  (synth ~30–60×, loudness ~20–50× projected; phase already measured 12×)
+  with reverb riding along at parity but transfer-free, plus the CPU cores
+  freed for CMOD event building. On server GPUs (Delta A100s) every one of
+  these numbers scales up ~5–8×.
+
 ## Verdict & revised plan
 
 1. **Accuracy gate: PASSED** (reverb scan −165 dBFS, length-independent).
