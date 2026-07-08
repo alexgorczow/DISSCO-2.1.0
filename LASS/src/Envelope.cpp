@@ -221,15 +221,36 @@ m_value_type Envelope::getValue(m_value_type x, m_value_type totalLength)
     if (getValueCachedLength_ != totalLength) {
         generateLengths(totalLength);
         getValueCachedLength_ = totalLength;
+        lastSearchX_ = -1; lastSearchCurrent_ = 0; lastSearchIndex_ = 0;
     }
 
-    //First, find the segment index that this x/totalLength refers to
-    m_value_type current = 0;
-    int x_Index = 0;
+    /* Find the segment this x refers to: a float prefix sum over the segment
+       lengths. Monotonic-sweep resume (bit-exact): we cache the PRE-correction
+       loop state (current = first prefix sum >= previous x, x_Index = number of
+       segments added so far). For x >= previous x, continuing the loop from
+       that state performs exactly the adds a from-scratch search would perform
+       (the prefix sums are one fixed float sequence), so the reached state --
+       and therefore the returned value -- is identical. The overshoot
+       correction below runs on locals and never touches the cached
+       pre-correction state (note (S-L)+L != S in floats, which is why the
+       POST-correction state must not be cached). Callers that sweep x forward
+       (the per-sample reverb mix at x = i/N) drop to O(1) amortized. */
+    m_value_type current;
+    int x_Index;
+    if (x < lastSearchX_) {           // backwards: full restart
+        current = 0;
+        x_Index = 0;
+    } else {                          // forwards (or equal): resume
+        current = lastSearchCurrent_;
+        x_Index = lastSearchIndex_;
+    }
     while (current < x) {
 	    current += generatedSegmentLengths_->get(x_Index);
 	    x_Index++;
 	}
+    lastSearchX_ = x;
+    lastSearchCurrent_ = current;
+    lastSearchIndex_ = x_Index;
 
     //If we have overshot, lets go back
     if (current != x) {

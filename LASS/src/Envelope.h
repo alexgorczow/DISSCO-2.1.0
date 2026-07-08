@@ -332,7 +332,25 @@ private:
   bool valueTablesBuilt_ = false;
   m_time_type getValueCachedLength_ = -1;
   void buildValueTables_();
-  void invalidateGetValueCache_() { valueTablesBuilt_ = false; getValueCachedLength_ = -1; }
+
+  /**
+   *	Monotonic-sweep resume state for getValue()'s segment search. The search
+   *	is a float prefix sum over generatedSegmentLengths_ starting at segment 0;
+   *	callers like the reverb evaluate x = i/N in increasing order, so we cache
+   *	the post-search (current, index) state and RESUME the identical prefix sum
+   *	from it when the next x is >= the previous one. Bit-exact by construction:
+   *	a from-scratch search reaches the exact same intermediate state (same adds,
+   *	same order) before continuing. Falls back to a full restart when x moves
+   *	backwards. Invalidated with the rest of the cache.
+   **/
+  m_value_type lastSearchX_ = -1;
+  m_value_type lastSearchCurrent_ = 0;
+  int lastSearchIndex_ = 0;
+
+  void invalidateGetValueCache_() {
+    valueTablesBuilt_ = false; getValueCachedLength_ = -1;
+    lastSearchX_ = -1; lastSearchCurrent_ = 0; lastSearchIndex_ = 0;
+  }
 
   /**
    *	This function populate the private member variable with actual

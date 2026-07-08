@@ -437,9 +437,19 @@ SoundSample *Reverb::do_reverb_SoundSample(SoundSample *inWave, Envelope *percen
   // CPU path (default)
   outWave = new SoundSample(inWave->getSampleCount(),
                             inWave->getSamplingRate());
-  for(i=0;i<inWave->getSampleCount();i++)
-    (*outWave)[i] = do_reverb((*inWave)[i],(float) i / inWave->getSampleCount()
-                            , percentReverb);
+  {
+    // Hoist the per-sample function calls (gprof: 8.4M getSampleCount() calls
+    // and the operator[] indirections were ~25% of the stage). Bit-exact: the
+    // x_value expression keeps the same operand types ((float)i divided by the
+    // sample count converted to float), and the data pointers alias the same
+    // storage operator[] returns.
+    const m_sample_count_type nSamples = inWave->getSampleCount();
+    const float fN = (float) nSamples;
+    const float* in  = inWave->getData();
+    float* outp = outWave->getData();
+    for (m_sample_count_type s = 0; s < nSamples; s++)
+      outp[s] = do_reverb(in[s], (float) s / fN, percentReverb);
+  }
 
   return outWave;
 }

@@ -196,7 +196,11 @@ public:
 			int old_back_idx;
 
 			old_back_idx = back_idx;
-			back_idx = (back_idx + 1) % length;
+			// conditional wrap instead of % (integer divide): this runs once
+			// per sample per filter in the reverb hot loop. Indices advance by
+			// exactly 1, so the wrap is equivalent (and integer, so bit-exact).
+			back_idx = back_idx + 1;
+			if (back_idx == length) back_idx = 0;
 			return array[old_back_idx];
 		}
 
@@ -208,7 +212,8 @@ public:
 		void enqueue(ElemType new_val)
 		{
 			array[front_idx] = new_val;
-			front_idx = (front_idx + 1) % length;
+			front_idx = front_idx + 1;
+			if (front_idx == length) front_idx = 0;
 		}
 
 		/**
