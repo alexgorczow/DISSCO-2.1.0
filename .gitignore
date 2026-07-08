@@ -22,3 +22,5 @@ valgrind_full.log
 *:Zone.Identifier
 __pycache__/
 LASS/portable/bench_map
+LASS/portable/bench_scan
+LASS/portable/bench_batch
