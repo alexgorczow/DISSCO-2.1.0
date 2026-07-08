@@ -36,6 +36,7 @@
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/execution_policy.h>
+#include <thrust/system/cuda/execution_policy.h>
 
 #include <cstdio>
 #include <cstring>
@@ -43,6 +44,7 @@
 #include <cmath>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 #include "../../restructure/profiling/StageProfiler.h"
 
 namespace {
@@ -219,8 +221,15 @@ __global__ void sumKernel(const float* __restrict__ wave, const float* __restric
 }
 
 // ---------------------------------------------------------------------------
-// Persistent device arena (grown on demand); one sound in flight at a time.
+// Persistent device arenas (grown on demand). A small POOL of arenas, each
+// with its own CUDA stream, lets several worker threads keep sounds in flight
+// concurrently -- the single global mutex measurably cancelled gpu-fast's
+// gains at high thread counts (7_final: 1.05x @20t). Pool size:
+// LASS_GPUFAST_STREAMS (default 2; VRAM-bounded -- each arena grows to the
+// largest sound seen). Per-sound math is unchanged and self-contained, so
+// concurrency does not change any output bits.
 struct Arena {
+  cudaStream_t stream = nullptr;
   float*  dense = nullptr;   long denseCap = 0;   // NPARAM+3 dense float arrays
   double* scans = nullptr;   long scansCap = 0;   // 3 double arrays
   float*  runsV = nullptr;   int* runsS = nullptr; int runsCap = 0;
@@ -259,8 +268,36 @@ struct Arena {
     return true;
   }
 };
-Arena g_arena;
-std::mutex g_mutex;
+// arena pool + counting gate
+std::vector<Arena*> g_pool;
+std::mutex g_poolMutex;
+std::condition_variable g_poolCv;
+struct ArenaLease {
+  Arena* a = nullptr;
+  ArenaLease() {
+    std::unique_lock<std::mutex> lk(g_poolMutex);
+    static bool init = false;
+    if (!init) {
+      init = true;
+      int n = 2;
+      if (const char* e = getenv("LASS_GPUFAST_STREAMS")) {
+        int v = atoi(e); if (v >= 1 && v <= 8) n = v;
+      }
+      for (int i = 0; i < n; ++i) {
+        Arena* ar = new Arena();
+        cudaStreamCreate(&ar->stream);
+        g_pool.push_back(ar);
+      }
+    }
+    g_poolCv.wait(lk, []{ return !g_pool.empty(); });
+    a = g_pool.back(); g_pool.pop_back();
+  }
+  ~ArenaLease() {
+    std::lock_guard<std::mutex> lk(g_poolMutex);
+    g_pool.push_back(a);
+    g_poolCv.notify_one();
+  }
+};
 
 // host-side RLE of one iterated parameter stream
 static void rleCompress(const std::vector<float>& src, std::vector<float>& vals,
@@ -389,13 +426,17 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
 
   // ---- device ----
   PROFILE_SCOPE(prof::GF_GPU);
-  std::lock_guard<std::mutex> lock(g_mutex);
+  ArenaLease lease;                       // blocks until an arena is free
+  Arena& A = *lease.a;
+  cudaStream_t st = A.stream;
   long PN = (long)P * N;
   int maxRuns = 1;
   for (auto& v : runsV) maxRuns = std::max(maxRuns, (int)v.size());
-  if (!g_arena.ensure(PN, sampleCount, maxRuns, P)) return nullptr;
+  if (!A.ensure(PN, sampleCount, maxRuns, P)) return nullptr;
 
-  if (!g_arena.bandsUp) {
+  static std::once_flag bandsOnce;
+  static bool bandsOk = false;
+  std::call_once(bandsOnce, [&]{
     const double (*B)[7] = Loudness::bandsTable();
     float lb[24], ub[24], e1[24], e2[24], ff[24], off[24], sl[24];
     for (int b = 0; b < 24; ++b) {
@@ -404,25 +445,27 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
       e2[b] = (float)(log10(2.0) / B[b][6]);
       ff[b] = (float)B[b][4]; off[b] = (float)B[b][5]; sl[b] = (float)B[b][6];
     }
-    CKF(cudaMemcpyToSymbol(cLB, lb, sizeof(lb)), "sym");
-    CKF(cudaMemcpyToSymbol(cUB, ub, sizeof(ub)), "sym");
-    CKF(cudaMemcpyToSymbol(cE1, e1, sizeof(e1)), "sym");
-    CKF(cudaMemcpyToSymbol(cE2, e2, sizeof(e2)), "sym");
-    CKF(cudaMemcpyToSymbol(cFF, ff, sizeof(ff)), "sym");
-    CKF(cudaMemcpyToSymbol(cOFF, off, sizeof(off)), "sym");
-    CKF(cudaMemcpyToSymbol(cSLOPE, sl, sizeof(sl)), "sym");
-    g_arena.bandsUp = true;
-  }
+    if (!ck(cudaMemcpyToSymbol(cLB, lb, sizeof(lb)), "sym")) return;
+    if (!ck(cudaMemcpyToSymbol(cUB, ub, sizeof(ub)), "sym")) return;
+    if (!ck(cudaMemcpyToSymbol(cE1, e1, sizeof(e1)), "sym")) return;
+    if (!ck(cudaMemcpyToSymbol(cE2, e2, sizeof(e2)), "sym")) return;
+    if (!ck(cudaMemcpyToSymbol(cFF, ff, sizeof(ff)), "sym")) return;
+    if (!ck(cudaMemcpyToSymbol(cOFF, off, sizeof(off)), "sym")) return;
+    if (!ck(cudaMemcpyToSymbol(cSLOPE, sl, sizeof(sl)), "sym")) return;
+    cudaDeviceSynchronize();
+    bandsOk = true;
+  });
+  if (!bandsOk) return nullptr;
 
   const int TB = 256;
   long gbN = (N + TB - 1) / TB;
-  float* d = g_arena.dense;                    // [NPARAM dense] + loud + wave + amp
+  float* d = A.dense;                    // [NPARAM dense] + loud + wave + amp
   float* dLoud = d + PN * NPARAM;
   float* dWave = d + PN * (NPARAM + 1);
   float* dAmp  = d + PN * (NPARAM + 2);
-  double* dS1 = g_arena.scans;                 // trem excl
-  double* dS2 = g_arena.scans + PN;            // vib excl -> freq incl
-  double* dS3 = g_arena.scans + 2 * PN;        // scratch increments
+  double* dS1 = A.scans;                 // trem excl
+  double* dS2 = A.scans + PN;            // vib excl -> freq incl
+  double* dS3 = A.scans + 2 * PN;        // scratch increments
 
   // expand all streams — dense layout [param][partial][N]: param k's block is
   // d + k*PN, partial p at offset p*N inside it. Elementwise kernels then index
@@ -452,15 +495,15 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
       for (int k = 0; k < NPARAM; ++k)
         fprintf(stderr, "  %-10s p0_runs=%d\n", pn[k], off[k*P+1]-off[k*P]);
     }
-    if (totRuns > g_arena.runsCap) {
-      if (g_arena.runsV) cudaFree(g_arena.runsV);
-      if (g_arena.runsS) cudaFree(g_arena.runsS);
-      CKF(cudaMalloc(&g_arena.runsV, totRuns*sizeof(float)), "runsV");
-      CKF(cudaMalloc(&g_arena.runsS, totRuns*sizeof(int)), "runsS");
-      g_arena.runsCap = totRuns;
+    if (totRuns > A.runsCap) {
+      if (A.runsV) cudaFree(A.runsV);
+      if (A.runsS) cudaFree(A.runsS);
+      CKF(cudaMalloc(&A.runsV, totRuns*sizeof(float)), "runsV");
+      CKF(cudaMalloc(&A.runsS, totRuns*sizeof(int)), "runsS");
+      A.runsCap = totRuns;
     }
-    CKF(cudaMemcpy(g_arena.runsV, packV.data(), totRuns*sizeof(float), cudaMemcpyHostToDevice), "runsV");
-    CKF(cudaMemcpy(g_arena.runsS, packS.data(), totRuns*sizeof(int), cudaMemcpyHostToDevice), "runsS");
+    CKF(cudaMemcpyAsync(A.runsV, packV.data(), totRuns*sizeof(float), cudaMemcpyHostToDevice, st), "runsV");
+    CKF(cudaMemcpyAsync(A.runsS, packS.data(), totRuns*sizeof(int), cudaMemcpyHostToDevice, st), "runsS");
 
     // pack envelope segment tables (device-evaluated streams)
     std::vector<GfSeg> hSegs; std::vector<int> soff(P*NPARAM+1, 0);
@@ -480,13 +523,13 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
         }
       }
     if (!hSegs.empty()) {
-      if ((int)hSegs.size() > g_arena.segsCap) {
-        if (g_arena.segs) cudaFree(g_arena.segs);
-        CKF(cudaMalloc(&g_arena.segs, hSegs.size()*sizeof(GfSeg)), "segs");
-        g_arena.segsCap = (int)hSegs.size();
+      if ((int)hSegs.size() > A.segsCap) {
+        if (A.segs) cudaFree(A.segs);
+        CKF(cudaMalloc(&A.segs, hSegs.size()*sizeof(GfSeg)), "segs");
+        A.segsCap = (int)hSegs.size();
       }
-      CKF(cudaMemcpy(g_arena.segs, hSegs.data(), hSegs.size()*sizeof(GfSeg),
-                     cudaMemcpyHostToDevice), "segs");
+      CKF(cudaMemcpyAsync(A.segs, hSegs.data(), hSegs.size()*sizeof(GfSeg),
+                     cudaMemcpyHostToDevice, st), "segs");
     }
 
     for (int k = 0; k < NPARAM; ++k)
@@ -494,19 +537,19 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
         int idx = k*P + p;
         int nSeg = soff[idx+1] - soff[idx];
         if (nSeg > 0)
-          evalSegKernel<<<(unsigned)gbN, TB>>>(g_arena.segs + soff[idx], nSeg,
+          evalSegKernel<<<(unsigned)gbN, TB, 0, st>>>(A.segs + soff[idx], nSeg,
                                                d + (long)k*PN + (long)p*N, N);
         else
-          expandKernel<<<(unsigned)gbN, TB>>>(g_arena.runsV + off[idx], g_arena.runsS + off[idx],
+          expandKernel<<<(unsigned)gbN, TB, 0, st>>>(A.runsV + off[idx], A.runsS + off[idx],
                                               off[idx+1]-off[idx], d + (long)k*PN + (long)p*N, N);
       }
   }
-  CKF(cudaMemcpy(g_arena.scal, hMaxWS.data(), P*sizeof(float), cudaMemcpyHostToDevice), "scal");
-  CKF(cudaMemcpy(g_arena.scal + P, hRelAmp.data(), P*sizeof(float), cudaMemcpyHostToDevice), "scal");
+  CKF(cudaMemcpyAsync(A.scal, hMaxWS.data(), P*sizeof(float), cudaMemcpyHostToDevice, st), "scal");
+  CKF(cudaMemcpyAsync(A.scal + P, hRelAmp.data(), P*sizeof(float), cudaMemcpyHostToDevice, st), "scal");
 
   // ---- loudness map ----
-  loudnessKernel<<<(unsigned)gbN, TB>>>(d + (long)P_FREQLOUD*PN, g_arena.scal,
-                                        g_arena.scal + P, maxAmp,
+  loudnessKernel<<<(unsigned)gbN, TB, 0, st>>>(d + (long)P_FREQLOUD*PN, A.scal,
+                                        A.scal + P, maxAmp,
                                         (float)snd.getParam(LOUDNESS),
                                         dLoud, P, N);
   CKF(cudaGetLastError(), "loudness");
@@ -518,36 +561,37 @@ MultiTrack* renderSoundGpuFast(Sound& snd, int numChannels, long sampleCount,
   auto keys = thrust::make_transform_iterator(
       thrust::make_counting_iterator<long>(0), KeyOfIndex{N});
   // tremolo: EXCLUSIVE prefix of tremRate/sr, per partial
-  buildIncKernel<<<(unsigned)gbPN, TB>>>(d + (long)P_TREMRATE*PN, dS3, PN, (float)samplingRate);
-  thrust::exclusive_scan_by_key(thrust::device, keys, keys + PN,
+  buildIncKernel<<<(unsigned)gbPN, TB, 0, st>>>(d + (long)P_TREMRATE*PN, dS3, PN, (float)samplingRate);
+  thrust::exclusive_scan_by_key(thrust::cuda::par.on(st), keys, keys + PN,
       thrust::device_pointer_cast(dS3), thrust::device_pointer_cast(dS1), 0.0);
   // vibrato: EXCLUSIVE prefix of vibRate/sr -> then frequency increments
-  buildIncKernel<<<(unsigned)gbPN, TB>>>(d + (long)P_VIBRATE*PN, dS3, PN, (float)samplingRate);
-  thrust::exclusive_scan_by_key(thrust::device, keys, keys + PN,
+  buildIncKernel<<<(unsigned)gbPN, TB, 0, st>>>(d + (long)P_VIBRATE*PN, dS3, PN, (float)samplingRate);
+  thrust::exclusive_scan_by_key(thrust::cuda::par.on(st), keys, keys + PN,
       thrust::device_pointer_cast(dS3), thrust::device_pointer_cast(dS2), 0.0);
-  freqKernel<<<(unsigned)gbPN, TB>>>(d + (long)P_FREQBASE*PN, d + (long)P_VIBAMP*PN,
+  freqKernel<<<(unsigned)gbPN, TB, 0, st>>>(d + (long)P_FREQBASE*PN, d + (long)P_VIBAMP*PN,
                                      dS2, dS3, PN, (float)samplingRate);
   // carrier: INCLUSIVE prefix of frequency/sr
-  thrust::inclusive_scan_by_key(thrust::device, keys, keys + PN,
+  thrust::inclusive_scan_by_key(thrust::cuda::par.on(st), keys, keys + PN,
       thrust::device_pointer_cast(dS3), thrust::device_pointer_cast(dS2));
 
   // ---- synth + deterministic partial sum ----
-  synthKernel<<<(unsigned)gbPN, TB>>>(dLoud, d + (long)P_WAVESHAPE*PN,
+  synthKernel<<<(unsigned)gbPN, TB, 0, st>>>(dLoud, d + (long)P_WAVESHAPE*PN,
                                       d + (long)P_TREMAMP*PN, dS1, dS2,
                                       d + (long)P_PHASEOFF*PN, dWave, dAmp, PN);
   CKF(cudaGetLastError(), "synth");
   long gbSC = (sampleCount + TB - 1) / TB;
-  sumKernel<<<(unsigned)gbSC, TB>>>(dWave, dAmp, g_arena.mono,
-                                    g_arena.mono + sampleCount, P, N, sampleCount,
+  sumKernel<<<(unsigned)gbSC, TB, 0, st>>>(dWave, dAmp, A.mono,
+                                    A.mono + sampleCount, P, N, sampleCount,
                                     1.0f / (float)numChannels);
   CKF(cudaGetLastError(), "sum");
 
   // ---- one D2H, assemble placeholder-spatialized MultiTrack ----
   std::vector<float> monoW(sampleCount), monoA(sampleCount);
-  CKF(cudaMemcpy(monoW.data(), g_arena.mono, sampleCount*sizeof(float),
-                 cudaMemcpyDeviceToHost), "D2H w");
-  CKF(cudaMemcpy(monoA.data(), g_arena.mono + sampleCount, sampleCount*sizeof(float),
-                 cudaMemcpyDeviceToHost), "D2H a");
+  CKF(cudaMemcpyAsync(monoW.data(), A.mono, sampleCount*sizeof(float),
+                 cudaMemcpyDeviceToHost, st), "D2H w");
+  CKF(cudaMemcpyAsync(monoA.data(), A.mono + sampleCount, sampleCount*sizeof(float),
+                 cudaMemcpyDeviceToHost, st), "D2H a");
+  CKF(cudaStreamSynchronize(st), "stream sync");
 
   MultiTrack* mt = new MultiTrack(numChannels, sampleCount, samplingRate);
   for (int c = 0; c < numChannels; ++c) {

@@ -171,6 +171,31 @@ remain open — #3 is now the dominant on-node lever.)*
    pull bench-piece accuracy toward the tutorial's −151 dBFS at some FP64 cost.
    **Open.**
 
+## Step 5 — stream pool + dup-reverb (the "batching point" rungs)
+
+Two changes landed together (`LASS_GPUFAST_STREAMS`, default 2):
+1. **Arena+stream pool** replaces the global GPU mutex: N arenas, each with its
+   own CUDA stream; all copies/kernels/thrust scans stream-scoped. Per-sound
+   math unchanged ⇒ gpu-fast md5s BIT-UNCHANGED (tutorial `c41910aa`,
+   bench `9127d8b1`).
+2. **Reverb-once-duplicate**: gpu-fast builds every channel as a memcpy of the
+   same mono mix and `do_reverb_MultiTrack` resets filters between tracks, so
+   channel reverbs are bit-identical — compute one, deep-copy (exact).
+
+Same-day A/B @20t: **7_final 1.05× → 1.89×** (8.5→4.5 s, ≈65× real-time);
+bench_1min → **8.62×** (2.9 s). 3 streams measured slightly worse than 2 on
+this 4 GB GPU (VRAM pressure) — default stays 2.
+
+### Discovery during verification: 7_final composition instability
+The A/B md5s flagged it; bisection proved it PRE-EXISTS (HEAD reproduces) and
+is COMPOSITION-side: fixed seed, identical 6425-draw Random stream (LD_PRELOAD
+spy), yet different frequencies chosen when heap layout shifts (load /
+LD_PRELOAD / ASLR all flip it; ≥3 stable-ish outcomes). Some CMOD build
+decision consumes an allocation address — root cause open (suspects: pointer-
+keyed container iteration in the Select/CURRENT_CHILD_NUM/Markov chain).
+Tutorial + bench det goldens are stress-verified stable; 7_final's golden is
+withdrawn in the manifest. This is a CMOD correctness bug worth its own hunt.
+
 ## Verdict & revised plan
 
 1. **Accuracy gate: PASSED** (reverb scan −165 dBFS, length-independent).

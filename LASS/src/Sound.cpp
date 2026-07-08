@@ -331,7 +331,22 @@ MultiTrack* Sound::render(
       cout << "\t Applying Reverb..." << endl;
       MultiTrack* reverbedTrackPtr;
       { PROFILE_SCOPE(prof::SOUND_REVERB);
-        reverbedTrackPtr = &reverbObj->do_reverb_MultiTrack(*composite);
+        if (gpuFastComposite != NULL && numChannels > 1) {
+          /* gpu-fast built every channel as a memcpy of the same mono mix, and
+             do_reverb_MultiTrack resets the filters between tracks -- so each
+             channel's reverb output is bit-identical. Compute ONE channel and
+             deep-copy it (exact; halves the dominant remaining CPU stage on
+             reverb-heavy pieces). Sound-level Pan runs after this, so channel
+             differentiation is unaffected. */
+          Track& r0 = reverbObj->do_reverb_Track(*composite->get(0));
+          MultiTrack* dup = new MultiTrack();
+          for (int c = 0; c < numChannels; ++c)
+            dup->add(new Track(r0));
+          delete &r0;
+          reverbedTrackPtr = dup;
+        } else {
+          reverbedTrackPtr = &reverbObj->do_reverb_MultiTrack(*composite);
+        }
       }
       MultiTrack &reverbedTrack = *reverbedTrackPtr;
       delete composite;

@@ -45,11 +45,23 @@ RMS −151.7 dBFS on the tutorial — the composite-order budget, nothing else.
 | Tutorial.dissco | 42 | **any** | `27a6672c9e5d0594ce6f39bea358edf5` |
 | ../../profiling/pieces/bench_1min.dissco | 8675309 (in file) | **any** | `c236f2b1ba7cc540c3c7eae5f5a07554` |
 | ../../profiling/pieces/bench_10min.dissco | 8675309 (in file) | **any** | `51fa8676d8a174c03b1a4e73a0b7bb95` |
-| 7_final.dissco (real piece, post-repair) | 42 | **any** | `a1c41b392332e9f0d4ac58665022838f` |
+| 7_final.dissco (real piece, post-repair) | 42 | **any** | ⚠ **NOT STABLE — do not use as a golden.** See below. |
 
 Verified matrices (2026-07-07): tutorial det@{1,8,20}t + det@20t-run2 +
 det-gpu@{1,20}t all equal; bench_1min det@{1,20}t + run2 + det-gpu@20t all
 equal; bench_10min det@20t == det-gpu@20t.
+
+**⚠ 7_final composition instability (discovered 2026-07-09, pre-existing):**
+7_final's COMPOSITION (not rendering) is sensitive to heap layout: with a fixed
+seed the Random stream is identical (LD_PRELOAD spy: exactly 6425 draws every
+run) yet chosen frequencies differ between runs when memory layout shifts
+(machine load, LD_PRELOAD, ASLR on/off all flip it; at least 3 distinct outputs
+observed: a1c41b39/483e92c2/f17d9c3e). Mechanism: some CMOD build-path decision
+consumes an allocation address (suspects: pointer-keyed container iteration or
+a pointer cast in the Select/CURRENT_CHILD_NUM/Markov chain) — root cause open.
+Affects legacy AND det equally (det's guarantees start at the composed piece).
+Tutorial and bench_1min det goldens are STRESS-VERIFIED stable; 7_final is the
+only known-affected piece.
 
 **Caution for legacy-mode goldens on large pieces:** pieces with more than
 MAX_SOUND_OBJECTS=200 sounds are NOT reproducible in legacy mode at any thread
