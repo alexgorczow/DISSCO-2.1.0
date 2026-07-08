@@ -208,3 +208,18 @@ Open questions before M-work starts:
 3. Is multi-node demand real for current users, or was the fork built for a
    one-off Expanse/Delta campaign? (Determines whether this track outranks
    Tier 2 at all.)
+
+> **Status update (2026-07-09, after 7_final validation): question 3 is
+> effectively answered — the M-track is DEMOTED to dormant.** The only real
+> piece in the repo (300 s, 703 sounds) renders in ~9–14 s @20t on a laptop
+> ([`10`](10_REALTIME_LISTENING.md)); multi-node fixed costs (SLURM queue,
+> **N× replicated composition** under the §2.2 slice trick, merge + I/O)
+> dwarf the seconds saved. The fork solved the *old* engine's problem, which
+> the acceleration track has since removed at the source. Revive M1–M2 only
+> on demonstrated demand: a piece exceeding ~10 min single-node, or sweep
+> workflows outgrowing a plain SLURM job array of independent whole-piece
+> renders (seed sweeps need none of this machinery). Note the structural
+> ceiling either way: CMOD composition is super-linear in sound count and
+> replicates per rank. **What remains worth harvesting regardless: the
+> Jupyter front-end, map-only mode, SLURM templates (§5) — UX and access,
+> not speed.**

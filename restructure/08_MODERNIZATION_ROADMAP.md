@@ -73,7 +73,7 @@ Measured / observed, not assumed:
 | **Tier 2 — performance architecture** | | | |
 | 2.1 | ✅ **DONE** (`83d5a05`) Implicit envelope arrays (device-side eval) | ~~M–L~~ | — |
 | 2.2 | ◐ Scan-with-operator device primitive (ad-hoc exists: `scan_by_key`, bench_batch) | M | — |
-| 2.3 | ◐ largely mooted by v3 (device 7.3 ms/sound); residual = light-piece mutex | S | fold into 2.5 |
+| 2.3 | ✅ **DONE** (`3a8b566`): arena+stream pool (LASS_GPUFAST_STREAMS); 7_final 1.05×→1.89× | — | — |
 | 2.4 | ◐ partial (`b8360cc`, 1.71×); remaining ≈3.2× gap | S–M | 1.3 (tests first) |
 | 2.5 | Score-level reverb batching (fuse step-2 kernel) — **now the #1 on-node lever** (+ spatialize 29%) | L | 2.2 |
 | 2.6 | Contract-aware runtime device tracker | S–M | — |
@@ -189,6 +189,8 @@ affine reverb operator as the first client. Prereq for 2.5; every future
 recurrence (loudness accumulation, envelope integration) rides it.
 
 ### 2.3 Un-serialize GPU submission — **CUDA practice, not viskores**
+**[DONE 2026-07-09 (`3a8b566`): arena+stream pool, md5s bit-unchanged,
+7_final 1.05×→1.89× @20t. Earlier note kept for history:]**
 **[Largely mooted by v3: the mutex-held section shrank 10× (72→7.3 ms/sound),
 turning @20t into a 7.4× win on bench pieces. The 0.95× tutorial regression
 (many light sounds) stands; fold the residual fix into 2.5's batching point

@@ -94,8 +94,8 @@ un-renderable (the palette segfault, then one corrupt closing tag
 
 | check | result |
 |---|---|
-| renders | 300 s piece: **8.7 s @20t (det) = 34× real-time**; 48.7 s @1t |
-| det determinism on real music | `a1c41b39…` identical: 2 runs AND 1t vs 20t |
+| renders | 300 s piece: **8.7 s @20t (det) = 34× real-time**; 48.7 s @1t; **4.5 s with gpu-fast stream-pool (≈65× real-time,** [`07`](07_GPU_FAST_SPIKE.md) §Step 5**)** |
+| det determinism on real music | `a1c41b39…` identical: 2 runs AND 1t vs 20t — **⚠ later found conditional: 7_final's COMPOSITION is heap-layout-sensitive on a loaded machine (pre-existing CMOD bug; golden withdrawn — see goldens/MANIFEST.md).** Rendering determinism (det) is unaffected; the tutorial/bench goldens are stress-verified |
 | gpu-fast eligibility | **0/703 sounds fall back** (earlier "302" was a stale count from the pre-repair file) — but only 1.05× faster: the piece is reverb/spatialize-bound (REV_Simple per sound), the exact "reverb-heavy repertoire" case of [`09`](09_HPC_FORK_ANALYSIS.md); use plain det here |
 | gpu-fast vs det accuracy | −61.6 dBFS RMS (phase-drift class, as documented) |
 | live streaming | full piece streamed in 8.4 s wall, **31–32× real-time margin**, AIFF byte-identical |
