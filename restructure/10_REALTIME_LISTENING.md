@@ -86,6 +86,27 @@ sounddevice; `tail_windows()` importable for Jupyter autoplay cells).
 | time-to-first-audio (tutorial @20t, gpu-fast) | **3.3 s** from process launch |
 | sustained margin (bench_10min @20t, gpu-fast) | **29→36× real-time** while streaming |
 
+### Real-piece validation + Jupyter client (2026-07-09)
+
+`7_final.dissco` — the only real composition in the repo, previously
+un-renderable (the palette segfault, then one corrupt closing tag
+`0.5/Size>`; repaired with a one-character fix, original backed up) — now:
+
+| check | result |
+|---|---|
+| renders | 300 s piece: **8.7 s @20t (det) = 34× real-time**; 48.7 s @1t |
+| det determinism on real music | `a1c41b39…` identical: 2 runs AND 1t vs 20t |
+| gpu-fast eligibility | **0/302 sounds fall back** — but only 1.05× faster: the piece is reverb/spatialize-bound (REV_Simple per sound), the exact "reverb-heavy repertoire" case of [`09`](09_HPC_FORK_ANALYSIS.md); use plain det here |
+| gpu-fast vs det accuracy | −61.6 dBFS RMS (phase-drift class, as documented) |
+| live streaming | full piece streamed in 8.4 s wall, **31–32× real-time margin**, AIFF byte-identical |
+
+`RealtimeListen.ipynb` (this directory) is the end-user client: configure a
+piece, run one cell, audio plays in chunked autoplay widgets while the render
+runs (fork-style UX on the deterministic stream). Executed headless end-to-end
+(TTFA 2.77 s on the tutorial); browser playback needs a real audio device.
+`parity_regression.sh` now asserts the streaming contract (AIFF unchanged +
+stream byte-identical across runs) — 18 checks total.
+
 The composition phase bounds TTFA (flushing starts at `doneAddingSounds`);
 pieces with slow event trees would benefit from a chronological-frontier
 relaxation (flush below the earliest *possible* future start) — future work,

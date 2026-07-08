@@ -45,6 +45,7 @@ RMS −151.7 dBFS on the tutorial — the composite-order budget, nothing else.
 | Tutorial.dissco | 42 | **any** | `27a6672c9e5d0594ce6f39bea358edf5` |
 | ../../profiling/pieces/bench_1min.dissco | 8675309 (in file) | **any** | `c236f2b1ba7cc540c3c7eae5f5a07554` |
 | ../../profiling/pieces/bench_10min.dissco | 8675309 (in file) | **any** | `51fa8676d8a174c03b1a4e73a0b7bb95` |
+| 7_final.dissco (real piece, post-repair) | 42 | **any** | `a1c41b392332e9f0d4ac58665022838f` |
 
 Verified matrices (2026-07-07): tutorial det@{1,8,20}t + det@20t-run2 +
 det-gpu@{1,20}t all equal; bench_1min det@{1,20}t + run2 + det-gpu@20t all

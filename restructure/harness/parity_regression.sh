@@ -9,6 +9,8 @@
 #   4. det-gpu parity   : LASS_COMPOSITE=det-gpu == det (GPU adds bit-identical
 #                         to CPU adds; on non-CUDA builds det-gpu falls back to
 #                         det, so the check passes trivially)
+#   5. streaming        : LASS_STREAM leaves the AIFF byte-identical, and the
+#                         stream itself is byte-identical across two runs
 # and reports the GPU-reverb divergence (LASS_REVERB=gpu) as a measured number.
 #
 # Checks 1-2 rely on the single-thread + fixed-seed contract; checks 3-4 are
@@ -46,6 +48,12 @@ for seed in "${SEEDS[@]}"; do
   ck "$d1" "$d8" "det composite: 1t == 8t (thread-count independent)"
   dg=$(render "$seed" 8 detgpu LASS_COMPOSITE=det-gpu)
   ck "$d1" "$dg" "det-gpu == det (cross-device)"
+  s1=$(render "$seed" 8 str1 LASS_COMPOSITE=det LASS_STREAM=$WORK/${seed}_str1.pcm)
+  s2=$(render "$seed" 8 str2 LASS_COMPOSITE=det LASS_STREAM=$WORK/${seed}_str2.pcm)
+  ck "$s1" "$d8" "streaming leaves AIFF byte-identical"
+  sm1=$(md5sum "$WORK/${seed}_str1.pcm" | awk '{print $1}')
+  sm2=$(md5sum "$WORK/${seed}_str2.pcm" | awk '{print $1}')
+  ck "$sm1" "$sm2" "stream byte-identical across runs"
   g=$(render "$seed" 1 gpu LASS_REVERB=gpu)
   if [ "$a" = "$g" ]; then echo "  note: GPU reverb == CPU (unexpected)"; else echo "  note: GPU reverb DIVERGES from correct CPU output (expected)"; fi
 done
