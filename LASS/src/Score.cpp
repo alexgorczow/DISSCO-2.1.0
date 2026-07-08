@@ -79,6 +79,7 @@ void Score::add(Sound* _sound){
   pthread_mutex_lock( &mutexSoundVector );
   // The insertion index is the canonical commit order for the det modes.
   sounds.push_back(std::make_pair(_sound, (long)soundObjectsCreated));
+  seqStartTimes.push_back(_sound->getParam(START_TIME));
   soundObjectsCreated ++;
 
   //update scoreEndTime
@@ -201,6 +202,36 @@ Score::Score(int _numThreads, int _numChannels, int _samplingRate )
     cout << "Score: deterministic composite ("
          << (compositeMode_ == COMPOSITE_DET_GPU ? "GPU" : "CPU")
          << ") -- output is bit-identical across thread counts." << endl;
+
+  // Streaming preview (restructure/10): append finalized windows of the score
+  // to a raw f32 stream while rendering. Requires the CPU det composite (the
+  // committed prefix must be host-readable in canonical order).
+  streamFile = NULL;
+  streamFlushedSamples = 0;
+  streamWindowSamples = (long)(0.5 * samplingRate);
+  if (const char* sp = getenv("LASS_STREAM")) {
+    if (compositeMode_ != COMPOSITE_DET) {
+      cout << "Score: LASS_STREAM requires LASS_COMPOSITE=det (CPU); "
+           << "streaming disabled." << endl;
+    } else {
+      if (const char* w = getenv("LASS_STREAM_WINDOW")) {
+        double ws = atof(w);
+        if (ws > 0.01 && ws < 30.0) streamWindowSamples = (long)(ws * samplingRate);
+      }
+      streamFile = fopen(sp, "wb");
+      if (!streamFile) {
+        cout << "Score: cannot open LASS_STREAM path '" << sp << "'." << endl;
+      } else {
+        unsigned int hdr[3] = {0x52545344u /*'DSTR' LE*/,
+                               (unsigned int)samplingRate,
+                               (unsigned int)numChannels};
+        fwrite(hdr, sizeof(unsigned int), 3, streamFile);
+        fflush(streamFile);
+        cout << "Score: streaming preview to " << sp << " (window "
+             << (double)streamWindowSamples / samplingRate << "s)." << endl;
+      }
+    }
+  }
 
   scoreEndTime = 1; //start with a small number
   scoreMultiTrackLength = scoreEndTime;
@@ -334,6 +365,7 @@ void Score::compositeRenderedSounds(){
           nextCommitSeq++;
           sem_post(&semEmptySlotsRendered);
         }
+        if (streamFile) streamFlush(false);
       }
     }
     else{
@@ -345,6 +377,11 @@ void Score::compositeRenderedSounds(){
           cerr << "WARNING: Score: " << reorderBuffer.size()
                << " rendered sounds never committed (missing seq "
                << nextCommitSeq << ")." << endl;
+        }
+        if (streamFile) {
+          streamFlush(true);
+          fclose(streamFile);
+          streamFile = NULL;
         }
 #ifdef HAVE_CUDA
         if (compositeMode_ == COMPOSITE_DET_GPU) {
@@ -366,6 +403,57 @@ void Score::compositeRenderedSounds(){
 
 
 }
+//------------------------------------------------------------------------------
+// Streaming preview flush (composite thread only). Window [a,b) is final once
+// every sound with startTime < b has been committed; with in-order commits the
+// uncommitted set is seq >= nextCommitSeq, so the frontier is the min start
+// over that suffix (O(pending), pending is bounded by the dispatch window +
+// producer lead). Flushing starts only after the producer is done adding
+// (before that, an earlier-starting sound could still arrive). Samples are
+// interleaved float32, hard-clamped to +-1 (the stream is pre-anticlip; see
+// restructure/10 for the preview contract). Never mutates render state, so
+// the final AIFF stays byte-identical.
+void Score::streamFlush(bool final){
+  if (!streamFile) return;
+
+  long frontierSamples;
+  if (final) {
+    frontierSamples = (long)scoreMultiTrack->get(0)->getWave().getSampleCount();
+  } else {
+    if (!doneGettingSoundObjects) return;
+    m_time_type minStart = -1;
+    pthread_mutex_lock(&mutexSoundVector);
+    for (long q = nextCommitSeq; q < (long)seqStartTimes.size(); ++q)
+      if (minStart < 0 || seqStartTimes[q] < minStart) minStart = seqStartTimes[q];
+    pthread_mutex_unlock(&mutexSoundVector);
+    if (minStart < 0) return;                    // nothing pending: wait for final
+    frontierSamples = (long)(minStart * (float)samplingRate);
+    long len = (long)scoreMultiTrack->get(0)->getWave().getSampleCount();
+    if (frontierSamples > len) frontierSamples = len;
+  }
+
+  int nCh = scoreMultiTrack->size();
+  std::vector<float> frame(nCh);
+  while (streamFlushedSamples +
+         (final ? 1 : streamWindowSamples) <= frontierSamples) {
+    long end = final ? frontierSamples
+                     : streamFlushedSamples + streamWindowSamples;
+    if (end > frontierSamples) end = frontierSamples;
+    for (long s = streamFlushedSamples; s < end; ++s) {
+      for (int c = 0; c < nCh; ++c) {
+        float v = scoreMultiTrack->get(c)->getWave()[s];
+        if (v > 1.0f) v = 1.0f;
+        if (v < -1.0f) v = -1.0f;
+        frame[c] = v;
+      }
+      fwrite(frame.data(), sizeof(float), nCh, streamFile);
+    }
+    streamFlushedSamples = end;
+    fflush(streamFile);
+    if (final && streamFlushedSamples >= frontierSamples) break;
+  }
+}
+
 //------------------------------------------------------------------------------
 MultiTrack* Score::joinThreadsAndMix(){
   //Join the threads

@@ -301,6 +301,19 @@ private:
     CompositeMode compositeMode_;
 
     /**
+    * Streaming preview (LASS_STREAM, det CPU composite only; see
+    * restructure/10_REALTIME_LISTENING.md). startTime of every added sound,
+    * indexed by seq (written under mutexSoundVector); the composite thread
+    * flushes finalized time windows: [a,b) is final once every sound with
+    * startTime < b is committed, i.e. up to min(start of seq >= nextCommitSeq).
+    **/
+    std::vector<m_time_type> seqStartTimes;
+    FILE* streamFile;
+    long streamFlushedSamples;
+    long streamWindowSamples;
+    void streamFlush(bool final);
+
+    /**
     * Commit one rendered sound into the score (grow + composite + free).
     * Used by both the legacy drain and the deterministic in-order drain.
     **/
